@@ -2,14 +2,16 @@ import tensorflow as tf
 from src.core.metrics import Metrics
 import time
 import os
-from src.tensorflow.utils import rnn_placeholders
+import numpy as np
+from src.utils import Stats
 
 
 class ModelTrainer:
-    def __init__(self, model, train_dr, test_dr, sequence_size):
+    def __init__(self, model, learning_rate, train_dr, test_dr, sequence_size, forget_state):
         self.model = model
         self.train_dr = train_dr
         self.test_dr = test_dr
+        self.forget_state = forget_state
         self.metrics = Metrics()
 
         self.global_step = tf.Variable(0, trainable=False)
@@ -17,41 +19,23 @@ class ModelTrainer:
         self.sequence_size = sequence_size
 
         self.input_placeholder = tf.placeholder(tf.float32, shape=[None, self.sequence_size, self.train_dr.input_dim])
-        self.target_placeholder = tf.placeholder(tf.float32, shape=[None, 1])
+        self.target_placeholder = tf.placeholder(tf.int32, shape=[None])
 
-        self.state_placeholder = model.state_placeholder()
+        self.state_placeholder, self.state = self.model.state_placeholders()
+        self.forward_op = self.model.forward(self.input_placeholder, self.state)
 
-        state_placeholder = tf.placeholder(tf.float32, [num_layers, 2, batch_size, state_size])
-        l = tf.unpack(state_placeholder, axis=0)
-        rnn_tuple_state = tuple(
-            [tf.nn.rnn_cell.LSTMStateTuple(l[idx][0], l[idx][1])
-             for idx in range(num_layers)]
-        )
+        self.prediction = self.forward_op[0]
 
+        self.loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.prediction,
+                                                                                  labels=self.target_placeholder))
 
-        print('Yoho')
-        self.prediction_op = self.model.forward(self.input_placeholder, self.state_placeholder)
-
-        self.loss = tf.nn.softmax_cross_entropy_with_logits(logits=self.prediction_op[0],
-                                                            labels=self.target_placeholder)
-
-        print('Yoho')
-        self.optimization_op = tf.train.AdamOptimizer(learning_rate=0.001).minimize(self.loss, self.global_step)
+        self.optimization_op = tf.train.AdamOptimizer(learning_rate).minimize(self.loss, self.global_step)
 
         self.sv = tf.train.Supervisor(logdir=os.path.join('logs', time.strftime("%Y%m%d-%H%M%S")), summary_op=None,
                                       global_step=self.global_step, save_model_secs=1200)
 
-        print('Evaluate hidden')
-        with self.sv.managed_session() as sess:
-            hidden = sess.run(self.state_placeholder)
-
-        print('Hidden')
-        print(hidden)
-
-        self.train_dr.initialize_epoch(randomize=True, sequence_size=self.sequence_size,
-                                       initial_state=hidden)
-        self.test_dr.initialize_epoch(randomize=False, sequence_size=self.sequence_size,
-                                      initial_state=hidden)
+        self.train_dr.initialize_epoch(randomize=True, sequence_size=self.sequence_size)
+        self.test_dr.initialize_epoch(randomize=False, sequence_size=self.sequence_size)
 
         self.train_dr.start_readers()
         self.test_dr.start_readers()
@@ -60,42 +44,46 @@ class ModelTrainer:
         dr = self.train_dr if train else self.test_dr
         total_loss = 0
         iteration = 0
-
-        try:
-            with self.sv.managed_session() as sess:
+        with self.sv.managed_session() as sess:
+            try:
                 while True:
-                    batch, labels, ids = dr.get_batch()
-                    hidden = self.model.import_hidden(dr.get_states(ids), cuda=True)
+                    batch, time, labels, ids = dr.get_batch()
+                    hidden = self.model.import_state(dr.get_states(ids, forget=self.forget_state), cuda=True)
 
-                    ops = [self.prediction_op, self.loss]
+                    ops = [self.forward_op, self.loss]
 
                     if train:
                         ops.append(self.optimization_op)
 
-                    r = sess.run(ops, feed_dict={self.input_placeholder: batch,
-                                                 self.target_placeholder: labels,
-                                                 self.state_placeholder: hidden})
+                    feed_dict = self.get_placeholder_dict(hidden)
+                    feed_dict[self.input_placeholder] = batch
+                    feed_dict[self.target_placeholder] = labels
 
-                    print(len(r))
-                    print(r)
-                    prediction, hidden, loss = r[:3]
+                    r = sess.run(ops, feed_dict)
+
+                    (prediction, hidden), loss = r[:2]
+                    total_loss += loss
 
                     self.metrics.append_results(ids, prediction, labels, train=train)
 
-                    dr.set_states(ids, self.model.export_hidden(hidden))
+                    dr.set_states(ids, self.model.export_state(hidden))
 
                     iteration += 1
                     if iteration % 100 is 0:
                         print('Iterations done %d' % iteration)
 
-        except IndexError:
-            print('%d Iterations in this epoch' % iteration)
+            except IndexError:
+                print('%d Iterations in this epoch' % iteration)
 
-            if iteration > 0:
-                print('Loss %g' % (total_loss / iteration))
+                result = self.metrics.finish_epoch(train=train)
 
-            self.metrics.finish_epoch(train=train)
+                dr.initialize_epoch(randomize=train, sequence_size=self.sequence_size)
 
-            dr.initialize_epoch(randomize=train, sequence_size=self.sequence_size,
-                                initial_state=self.model.initial_hidden())
+                return result
 
+    def get_placeholder_dict(self, state):
+        d = dict()
+        for p, s in zip(self.state_placeholder, state):
+            d[p] = s
+
+        return d

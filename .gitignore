@@ -2,6 +2,13 @@
 .idea/
 data/
 logs/
+models/
+
+tutoral/data/
+tutoral/logs/
+tutorial/models
+
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

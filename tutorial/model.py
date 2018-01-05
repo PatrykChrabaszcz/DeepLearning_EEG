@@ -7,15 +7,15 @@ import numpy as np
 import math, random
 
 
-class SimpleRNN(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers=3, num_classes=2):
+class TutorialRNN(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers=1, num_classes=1):
         super().__init__()
         self.hidden_size = hidden_size
-        self.num_layers = num_layers
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, num_classes)
 
     def forward(self, x, hidden):
+        # Forward propagate RNN
         lstm_out, hidden = self.lstm(x, hidden)
         # Apply linear layer to all outputs
         lstm_out = lstm_out.contiguous()
@@ -24,8 +24,10 @@ class SimpleRNN(nn.Module):
         return fc_out.view(lstm_out.size(0), lstm_out.size(1), fc_out.size(1)), hidden
 
     def initial_state(self):
-        return np.array(np.random.normal(0, 1.0, (self.num_layers, self.hidden_size)), dtype=np.float32), \
-               np.array(np.random.normal(0, 1.0, (self.num_layers, self.hidden_size)), dtype=np.float32)
+        # return np.zeros([1, self.hidden_size], dtype=np.float32), \
+        #        np.zeros([1, self.hidden_size], dtype=np.float32)
+        return np.array(np.random.normal(0, 1.0, (1, self.hidden_size)), dtype=np.float32), \
+               np.array(np.random.normal(0, 1.0, (1, self.hidden_size)), dtype=np.float32)
 
     # Converts PyTorch hidden state representation into something that can be saved
     def export_state(self, states):
@@ -37,22 +39,20 @@ class SimpleRNN(nn.Module):
         return [(a, b) for (a, b) in zip(states_0, states_1)]
 
     # Converts PyTorch hidden state representation into something that can be saved
-    def import_state(self, states, cuda=True):
+    def import_state(self, states):
         states_0, states_1 = np.stack([s[0] for s in states]), np.stack([s[1] for s in states])
         states_0, states_1 = np.swapaxes(states_0, 1, 0), np.swapaxes(states_1, 1, 0)
 
         states_0, states_1 = Variable(torch.from_numpy(states_0), requires_grad=False),\
                              Variable(torch.from_numpy(states_1), requires_grad=False)
-        if cuda:
-            return states_0.cuda(), states_1.cuda()
-        else:
-            return states_0, states_1
+
+        return states_0, states_1
 
     def save_model(self, path):
         torch.save(self.state_dict(), path)
 
     def load_model(self, path):
-        self.load_state_dict(torch.load(path, map_location=lambda storage, loc: storage))
+        self.load_state_dict(torch.load(path))
 
     def count_params(self):
         pp = 0
@@ -62,42 +62,3 @@ class SimpleRNN(nn.Module):
                 nn = nn*s
             pp += nn
         return pp
-
-
-class ConvNet(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.sequence_length = 500
-
-        self.conv1 = nn.Conv2d(1, 1, (10, 1), stride=(2, 1))
-        self.conv2 = nn.Conv2d(1, 1, (10, 1), stride=(2, 1))
-        self.conv3 = nn.Conv2d(1, 64, (4, 22), stride=(2, 1))
-        self.conv4 = nn.Conv2d(1, 128, (4, 22), stride=(2, 1))
-
-        #self.fc = nn.Linear(hidden_size, num_classes)
-
-    def forward(self, x, hidden):
-        print('Forward')
-        # X is assumed to have format [Batch Size, Time, Channels]
-        # Need to reshape to [Batch Size, 1, Time, Channels]
-
-        timesteps = x.size()[1]
-        channels = x.size()[2]
-        x = x.view(-1, 1, timesteps, channels)
-
-        x = self.conv1(x)
-        x = F.relu(x)
-        x = self.conv2(x)
-        x = F.relu(x)
-        x = self.conv3(x)
-        x = F.relu(x)
-        x = self.conv4(x)
-        x = F.relu(x)
-
-        x = x.view(x.size(0), -1)
-
-        print(x)
-        return 1
-
-    def initial_state(self):
-        return np.zeros([1, 1]), np.zeros([1, 1])

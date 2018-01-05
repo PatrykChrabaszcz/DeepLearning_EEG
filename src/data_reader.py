@@ -2,8 +2,11 @@ import mne
 import os
 import numpy as np
 import multiprocessing
-from src.utils import Stats
+from src.utils import Stats, nested_list_len
 import random
+import logging
+import signal
+from queue import Empty
 
 # Definitions
 # EXAMPLE: we use the term 'example' to define independent sequence, e.g. full sequence recording from one session.
@@ -16,8 +19,13 @@ import random
 # Because of that it is impossible to put 2 sequences from the same example into one mini-batch.
 
 
+logger = logging.getLogger(__name__)
+
+
 # We need to manage state
 class SequenceDataReader:
+    class EpochDone(Exception):
+        pass
 
     Train_Data = 'train'
     Validation_Data = 'validation'
@@ -79,10 +87,16 @@ class SequenceDataReader:
         def read_data(self, serialized):
             raise NotImplementedError
 
-    def __init__(self, readers_count, batch_size=64,
+    def __init__(self, readers_count, state_initializer, data_type=Train_Data, batch_size=64,
                  balanced=True, allow_smaller_batch=False):
+
+        # state_initializer function is used to get the initial state (for example: random or zero)
+        self.state_initializer = state_initializer
         # If balanced then will take the same amount of examples from each class
         self.balanced = balanced
+
+        # Train or Validation type
+        self.data_type = data_type
 
         self.batch_size = batch_size
 
@@ -101,8 +115,6 @@ class SequenceDataReader:
         # Number of samples to read in the current epoch
         self.samples_count = 0
 
-        self._create_readers()
-
         # self.examples[i] -> List with examples for class i
         self.examples = []
         # dictionary example_id -> example for faster access when updating/receiving RNN state
@@ -110,40 +122,62 @@ class SequenceDataReader:
 
         # Will populate examples list and dictionary with all examples
         self._create_examples()
+        self._create_readers()
 
         self.state_needs_update = True
 
     # Implements a method that will create file reader threads, and append them to the self.readers list
     def _create_readers(self):
+        logger.info('Create reader processes')
         for i in range(self.readers_count):
-            p = multiprocessing.Process(target=self._read_sample_function(), args=(self.info_queue, self.data_queue))
+            p = multiprocessing.Process(target=SequenceDataReader.read_sample_function,
+                                        args=(self.info_queue, self.data_queue, self.examples_dict))
             self.readers.append(p)
 
     def stop_readers(self):
-        # Will stop readers if they are blocked on the input read
-        self.info_queue.put((None, None))
+        logger.info('Trying to stop the readers ...')
 
-        # Will stop readers if there is still something to read
-        self.stop_readers_event.set()
-        for r in self.readers:
+        while self.info_queue.qsize() > 0:
+            try:
+                self.info_queue.get(timeout=1)
+            except Empty:
+                logger.debug('During cleanup, trying to get an element when queue is empty')
+
+        # Will stop readers if they are blocked on the input read
+        for i in range(self.readers_count):
+            self.info_queue.put((None, None))
+
+        # This is super strange to me:
+        # If output_queue has more than 1 element then somehow we are not able to join those processes
+
+        # Solution: Simply clear out that data queue to make it possible to nicely shut down without zombie processes
+        while self.data_queue.qsize() > 0:
+            self.data_queue.get(timeout=1)
+
+        for (i, r) in enumerate(self.readers):
+            logger.info('Waiting on join (%s) for reader %d' % (self.data_type, i))
             r.join()
-            print('Reader joined')
-        # Note that we do not clear up queues after finishing
-        # This function is intended to be called at the end of training
+
+        logger.info('Readers joined')
 
     # Will stop when stop_readers_event is set unless info_queue is empty
     # If info_queue is empty then will stop if receives None as example_id
-    def _read_sample_function(self):
-        def func(info_queue, output_queue):
-            while not self.stop_readers_event.is_set():
-                example_id, serialized = info_queue.get()
-                if example_id is None:
-                    info_queue.put(None, None)
-                    break
-                data = self.examples_dict[example_id].read_data(serialized)
+    @staticmethod
+    def read_sample_function(info_queue, output_queue, examples_dict):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        logger.info('New reader process is running ...')
+
+        while True:
+            example_id, serialized = info_queue.get()
+            if example_id is not None:
+                data = examples_dict[example_id].read_data(serialized)
                 output_queue.put(data)
-            print('Reader finished')
-        return func
+
+            else:
+                logger.info('Reader received None, finishing the process ...')
+                break
+
+        logger.info('Reader process finished.')
 
     # Implements a method that will fill up self.examples list. This list contains all necessary information about
     # all examples
@@ -184,11 +218,8 @@ class SequenceDataReader:
                 self.samples_count += 1
                 self.info_queue.put(example.get_info_and_advance())
 
-    # Two possible ways to design this:
-    # Current: Read all examples that were not used in the previous epoch
-    # Possible: Stop reading threads, Clear queues, Start reading threads
-    # Not sure which one is better.
-    def initialize_epoch(self, sequence_size, randomize, initial_state):
+    def initialize_epoch(self, sequence_size, randomize):
+        logger.debug('Initialize new epoch (%s)' % self.data_type)
         # Read examples that we were unable to process
         for i in range(self.samples_count):
             self.data_queue.get()
@@ -199,7 +230,7 @@ class SequenceDataReader:
         for class_examples in self.examples:
             for example in class_examples:
                 example.reset(sequence_size, randomize)
-                example.state = initial_state
+                example.state = self.state_initializer()
 
         # Populate info queue with some examples
         self._append_samples(5 * self.batch_size)
@@ -216,20 +247,54 @@ class SequenceDataReader:
         self._append_samples(self.batch_size)
         self.state_needs_update = False
 
-    def get_states(self, keys):
+    # Prepare list of states for given keys, if forget is True then use initial states instead
+    # (No forward state propagation during truncated back-propagation)
+    def get_states(self, keys, forget=False):
         states = []
         for key in keys:
-            states.append(self.examples_dict[key].state)
-        return np.stack(states, axis=0)
+            if forget:
+                states.append(self.state_initializer())
+            else:
+                states.append(self.examples_dict[key].state)
+        return states
 
     def start_readers(self):
+        logger.info('Starting readers')
         for r in self.readers:
             r.start()
+
+    def get_batch(self):
+        if self.state_needs_update:
+            raise RuntimeError('State needs an update')
+
+        data_arrays = []
+        time_arrays = []
+        labels = []
+        ids = []
+
+        if self.samples_count < self.batch_size:
+            if not self.allow_smaller_batch or self.samples_count == 0:
+                raise SequenceDataReader.EpochDone
+            else:
+                batch_size = self.samples_count
+        else:
+            batch_size = self.batch_size
+
+        for i in range(batch_size):
+            data, time, label, example_id = self.data_queue.get()
+            self.samples_count -= 1
+            data_arrays.append(data)
+            time_arrays.append(time)
+            labels.append(label)
+            ids.append(example_id)
+
+        self.state_needs_update = True
+        return np.stack(data_arrays, axis=0), np.stack(time_arrays, axis=0), np.array(labels), ids
 
 
 class AnomalyDataReader(SequenceDataReader):
     class ExampleInfo(SequenceDataReader.SequenceExampleInfo):
-        def __init__(self, example_id, file_name, label):
+        def __init__(self, example_id, file_name, label, limit_duration=None):
             super().__init__(example_id)
 
             self.file_name = file_name
@@ -237,6 +302,7 @@ class AnomalyDataReader(SequenceDataReader):
 
             self.file_handler = mne.io.read_raw_fif(file_name, preload=False, verbose='error')
             self.length = self.file_handler.n_times
+            self.length = self.length if limit_duration is None else min(self.length, limit_duration)
 
         def get_length(self):
             return self.length
@@ -245,76 +311,49 @@ class AnomalyDataReader(SequenceDataReader):
             index = serialized[0]
             data = self.file_handler.get_data(None, index, index + self.sequence_size).astype(np.float32)
             data = np.transpose(data)
+            # Time might be needed for some advanced models like PhasedLSTM
+            time = np.reshape(np.arange(index, index + self.sequence_size), newshape=[self.sequence_size, 1])
 
-            return data, self.label, self.example_id
+            label = np.array([self.label] * self.sequence_size)
+            return data, time, label, self.example_id
 
-    def __init__(self, cache_path, data_type=SequenceDataReader.Train_Data, **kwargs):
-        self.data_type = data_type
+    def __init__(self, cache_path, limit_examples=None, limit_duration=None, **kwargs):
         self.cache_path = cache_path
         self.input_dim = 22
-
+        self.limit_examples = limit_examples
+        self.limit_duration = limit_duration
         super().__init__(**kwargs)
 
     def _create_examples(self):
+        logger.info('Read information about all sample files from the dataset')
         p = os.path.join(self.cache_path, self.data_type, 'normal')
         file_normal_paths = [os.path.join(p, f) for f in os.listdir(p)]
         p = os.path.join(self.cache_path, self.data_type, 'abnormal')
         file_abnormal_paths = [os.path.join(p, f) for f in os.listdir(p)]
 
+        if self.limit_examples is not None:
+            file_normal_paths = file_normal_paths[:self.limit_examples]
+            file_abnormal_paths = file_abnormal_paths[:self.limit_examples]
+
+        logger.info('Report for %s:' % self.data_type)
+        logger.info('Number of normal recordings: %d' % len(file_normal_paths))
+        logger.info('Number of abnormal recordings: %d' % len(file_abnormal_paths))
+
+        logger.info('Create info objects for the files')
+
         for i, file_paths in enumerate([file_normal_paths, file_abnormal_paths]):
-            self.examples.append([AnomalyDataReader.ExampleInfo((i, j), fn, i)
+            self.examples.append([AnomalyDataReader.ExampleInfo((i, j), fn, i, self.limit_duration)
                                   for (j, fn) in enumerate(file_paths)])
+            logger.info('In class %d, cumulative length %d' % (i, sum([e.get_length() for e in self.examples[-1]])))
+
+        logger.info('Number of sequences in the dataset %d' % nested_list_len(self.examples))
 
         # Additional data structure for faster access
         for class_examples in self.examples:
             for example in class_examples:
                 self.examples_dict[example.example_id] = example
 
-    # Make it more generic and move it to the Base Class
-    def get_batch(self):
-        if self.state_needs_update:
-            raise RuntimeError('State needs an update')
-
-        data_arrays = []
-        labels = []
-        ids = []
-
-        if self.samples_count < self.batch_size:
-            if not self.allow_smaller_batch or self.samples_count == 0:
-                raise IndexError
-            else:
-                batch_size = self.samples_count
-        else:
-            batch_size = self.batch_size
-
-        for i in range(batch_size):
-            data, label, example_id = self.data_queue.get()
-            self.samples_count -= 1
-            data_arrays.append(data)
-            labels.append(label)
-            ids.append(example_id)
-
-        self.state_needs_update = True
-        return np.stack(data_arrays, axis=0), np.array(labels), ids
-
 
 if __name__ == '__main__':
 
-    cache_path = '/mhome/chrabasp/data'
-    sequence_size = 600
-
-    data_reader = AnomalyDataReader(cache_path, readers_count=10, batch_size=64)
-
-    data_reader.initialize_epoch(sequence_size, randomize=True, initial_state=None)
-    data_reader.start_readers()
-
-    while True:
-        try:
-            with Stats('To get a batch'):
-                print(data_reader.samples_count)
-                batch, labels, ids = data_reader.get_batch()
-                data_reader.set_states(ids, [None for i in ids])
-
-        except IndexError:
-            print('Epoch passed')
-            data_reader.initialize_epoch(sequence_size, randomize=True, initial_state=None)
+    pass
