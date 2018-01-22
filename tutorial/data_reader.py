@@ -1,8 +1,10 @@
-import numpy as np
-from src.data_reader import SequenceDataReader
-from src.utils import nested_list_len
 import logging
 import os
+
+import numpy as np
+
+from src.data_reading.data_reader import SequenceDataReader
+from src.utils import nested_list_len
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,8 @@ class TutorialDataReader(SequenceDataReader):
 
             # Preload the data, for bigger files it might be a good idea to read chunks straight from the files inside
             # the read_data() function
-            self.data = np.load(file_name)
+            self.data = np.load(file_name).astype(np.float32)
+
             self.length = self.data.shape[0]
 
         def get_length(self):
@@ -38,9 +41,9 @@ class TutorialDataReader(SequenceDataReader):
             # For some fields at the beginning there are no labels, we will generate random ones
             extend = max(0, self.DELAY - index)
             if extend > 0:
-                label = np.array(np.concatenate((
+                label = np.concatenate((
                     np.random.choice([-1.0, 1.0], size=min(extend, self.sequence_size)),
-                    self.data[0:max(0, (self.sequence_size-extend))])), dtype=np.float32)
+                    self.data[0:max(0, (self.sequence_size-extend))])).astype(dtype=np.float32)
 
             else:
                 label = self.data[index-self.DELAY: index-self.DELAY+self.sequence_size]

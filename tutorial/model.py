@@ -2,32 +2,34 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.autograd import Variable
+from src.dl_core.model import ModelBase
 from torch import optim
 import numpy as np
 import math, random
 
 
 class TutorialRNN(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers=1, num_classes=1):
+    cell_mapper = {
+        'LSTM': nn.LSTM
+    }
+
+    def __init__(self, input_size, hidden_size, num_layers, num_classes, cell_type):
         super().__init__()
         self.hidden_size = hidden_size
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.num_layers = num_layers
+        self.lstm = self.cell_mapper[cell_type](input_size, hidden_size, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, num_classes)
 
     def forward(self, x, hidden):
-        # Forward propagate RNN
         lstm_out, hidden = self.lstm(x, hidden)
-        # Apply linear layer to all outputs
         lstm_out = lstm_out.contiguous()
         fc_out = self.fc(lstm_out.view(lstm_out.size(0) * lstm_out.size(1), lstm_out.size(2)))
-
-        return fc_out.view(lstm_out.size(0), lstm_out.size(1), fc_out.size(1)), hidden
+        fc_out = fc_out.view(lstm_out.size(0), lstm_out.size(1), fc_out.size(1))
+        return fc_out, hidden
 
     def initial_state(self):
-        # return np.zeros([1, self.hidden_size], dtype=np.float32), \
-        #        np.zeros([1, self.hidden_size], dtype=np.float32)
-        return np.array(np.random.normal(0, 1.0, (1, self.hidden_size)), dtype=np.float32), \
-               np.array(np.random.normal(0, 1.0, (1, self.hidden_size)), dtype=np.float32)
+        return np.array(np.random.normal(0, 1.0, (self.num_layers, self.hidden_size)), dtype=np.float32), \
+               np.array(np.random.normal(0, 1.0, (self.num_layers, self.hidden_size)), dtype=np.float32)
 
     # Converts PyTorch hidden state representation into something that can be saved
     def export_state(self, states):
@@ -52,7 +54,7 @@ class TutorialRNN(nn.Module):
         torch.save(self.state_dict(), path)
 
     def load_model(self, path):
-        self.load_state_dict(torch.load(path))
+        self.load_state_dict(torch.load(path, map_location=lambda storage, loc: storage))
 
     def count_params(self):
         pp = 0

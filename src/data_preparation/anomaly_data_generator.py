@@ -1,12 +1,12 @@
 import resampy
 import numpy as np
 import logging
-from src.utils import Stats
+from src.utils import save_dict
 import glob
 import re
 import os
 import mne
-
+import click
 
 log = logging.getLogger()
 
@@ -72,7 +72,7 @@ class DataGenerator:
                 sampling_frequency = 1 / (edf_file.times[1] - edf_file.times[0])
                 if sampling_frequency < 10:
                     self.sampling_frequency = sampling_frequency
-                    return
+                    raise RuntimeError('Weird sampling frequency (%g)for the file %s' % (sampling_frequency, file_path))
 
             self.edf_file = edf_file
             self.sampling_frequency = sampling_frequency
@@ -82,27 +82,24 @@ class DataGenerator:
             # Some weird sampling frequencies are at 1 hz or below, which results in division by zero
             self.duration = self.n_samples / max(sampling_frequency, 1)
 
-    class RunningNormStats:
-        def __init__(self, channels_cnt, factor=1000.0):
-            self.factor = factor
-            self.cnt = np.float64(0)
-            self.sum = np.zeros([channels_cnt, 1], dtype=np.float64)
-            self.sum_square = np.zeros([channels_cnt, 1], dtype=np.float64)
+            # For some strange reason beyond my knowledge MNE library does not extract Age and Gender
+            with open(file_path, 'rb') as f:
+                header = f.read(88)
+                patient_id = header[8:88].decode('ascii')
+                [age] = re.findall("Age:(\d+)", patient_id)
+                [gender] = re.findall("\s([F|M|X])\s", patient_id)
+                [number] = re.findall("^(\d{8})", patient_id)
 
-        def append_data(self, data):
-            self.cnt += data.shape[1]
-            self.sum +=np.sum(data, axis=1, keepdims=True)
-            self.sum_square += np.sum(np.square(data), axis=1, keepdims=True)
+            self.age = age
+            self.gender = gender
+            self.number = number
+            self.sequence_name = os.path.basename(file_path)[:-4]
 
-        @property
-        def mean(self):
-            return self.sum / (self.cnt)
+            # TODO: We would like to read some more information from the description files
+            # txt_file_path = file_path[:-8] + '.txt'
 
-        @property
-        def stdv(self):
-            return np.sqrt(np.maximum((self.sum_square / self.cnt - np.square(self.mean)), 1e-15))
-
-    def __init__(self, data_path, cache_path, secs_to_cut, sampling_freq, duration_min, version='v1.1.2'):
+    def __init__(self, data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value,
+                 version='v1.1.2'):
         """
         :param data_path:
             Path to the original data
@@ -118,6 +115,7 @@ class DataGenerator:
         self.secs_to_cut_at_start_end = secs_to_cut
         self.sampling_freq = sampling_freq
         self.duration_recording_mins = duration_min
+        self.max_abs_value = max_abs_value
 
     @staticmethod
     def read_all_file_names(path, extension='.edf', key=Key.time_key):
@@ -153,7 +151,7 @@ class DataGenerator:
         for sensor_type in sensor_types:
             wanted_electrodes.extend(DataGenerator.wanted_electrodes[sensor_type])
 
-        # This guy can throw an exception (TODO:See)
+        # This guy can throw an exception
         file_info = DataGenerator.FileInfo(file_name, preload=True)
 
         log.info("Load file %s" % file_name)
@@ -162,7 +160,8 @@ class DataGenerator:
         if not np.array_equal(cnt.ch_names, wanted_electrodes):
             raise RuntimeError('Not all channels available')
 
-        data = cnt.get_data().astype(np.float32)
+        # From volt to microvolt
+        data = (cnt.get_data() * 1e6).astype(np.float32)
         fs = cnt.info['sfreq']
 
         if preprocessing_functions is not None:
@@ -172,7 +171,19 @@ class DataGenerator:
                 data, fs = preprocessing_function(data, fs)
                 assert (data.dtype == np.float32) and (type(fs) == float), (data.dtype, type(fs))
 
-        return data
+        # Extract some additional info: Age, Gender, number
+        anomaly_cnt = file_name.count('abnormal')
+        assert(anomaly_cnt in [1, 3])
+        info_dictionary = {
+            'age': int(file_info.age),
+            'gender': file_info.gender,
+            'number': file_info.number,
+            'anomaly': 1 if anomaly_cnt == 3 else 0,
+            'file_name': file_name,
+            'sequence_name': file_info.sequence_name
+        }
+
+        return data, info_dictionary
 
     def default_preprocessing_functions(self):
         preprocessing_functions = []
@@ -184,6 +195,7 @@ class DataGenerator:
 
         preprocessing_functions.append(lambda data, fs: (resampy.resample(data, fs, self.sampling_freq, axis=1,
                                                                           filter='kaiser_fast'), self.sampling_freq))
+        #preprocessing_functions.append(lambda data, fs: (np.clip(data, -self.max_abs_value, self.max_abs_value), fs))
 
         return preprocessing_functions
 
@@ -198,58 +210,81 @@ class DataGenerator:
         split_index = int(len(train_files) * split_factor)
 
         val_files = train_files[split_index:]
-        val_labels = train_labels[split_index:]
 
         train_files = train_files[:split_index]
-        train_labels = train_labels[:split_index]
 
         # Find out normalization statistics:
         preprocessing_functions = self.default_preprocessing_functions()
         norm_stats = None
+
+        ch_names = DataGenerator.wanted_electrodes['EEG'] + DataGenerator.wanted_electrodes['EKG']
+
         for i, train_file in enumerate(train_files):
             try:
-                data = self._load_file(train_file, preprocessing_functions, sensor_types=('EEG', 'EKG1'))
+                data, _ = self._load_file(train_file, preprocessing_functions, sensor_types=('EEG', 'EKG1'))
             except RuntimeError:
-                data = self._load_file(train_file, preprocessing_functions, sensor_types=('EEG', 'EKG'))
-            norm_stats = DataGenerator.RunningNormStats(channels_cnt=data.shape[0]) if norm_stats is None else norm_stats
+                data, _ = self._load_file(train_file, preprocessing_functions, sensor_types=('EEG', 'EKG'))
+            norm_stats = self.RunningNormStats(ch_names=ch_names) if norm_stats is None else norm_stats
             norm_stats.append_data(data)
 
             print('Find normalization, Progress %g' % ((i+1) / len(train_files)))
+
+        # Save Norm statistics
+        os.makedirs(self.cache_path, exist_ok=True)
+        norm_stats.save(os.path.join(self.cache_path, 'normalization_stats.json'))
 
         mean = norm_stats.mean.astype(dtype=np.float32)
         stdv = norm_stats.stdv.astype(dtype=np.float32)
 
         preprocessing_functions.append(lambda data, fs: ((data-mean)/stdv, fs))
 
-        ch_names = DataGenerator.wanted_electrodes['EEG'] + DataGenerator.wanted_electrodes['EKG']
-        for split_type, split_files, split_labels in zip(['train', 'validation', 'test'],
-                                                         [train_files, val_files, test_files],
-                                                         [train_labels, val_labels, test_labels]):
+        for split_type, split_files in zip(['train', 'validation', 'test'],
+                                           [train_files, val_files, test_files]):
 
-            normal_path = os.path.join(self.cache_path, split_type, 'normal')
-            abnormal_path = os.path.join(self.cache_path, split_type, 'abnormal')
+            output_data_dir = os.path.join(self.cache_path, split_type, 'data')
+            output_info_dir = os.path.join(self.cache_path, split_type, 'info')
+            os.makedirs(output_data_dir, exist_ok=True)
+            os.makedirs(output_info_dir, exist_ok=True)
 
-            for i, (file, label) in enumerate(zip(split_files, split_labels)):
-                output_path = normal_path if label == 0 else abnormal_path
-                os.makedirs(output_path, exist_ok=True)
-                output_path = os.path.join(output_path, str(i) + '_raw.fif')
-
+            for i, file in enumerate(split_files):
                 try:
-                    data = self._load_file(file, preprocessing_functions, sensor_types=('EEG', 'EKG1'))
+                    data, info_dict = self._load_file(file, preprocessing_functions, sensor_types=('EEG', 'EKG1'))
                 except RuntimeError:
-                    data = self._load_file(file, preprocessing_functions, sensor_types=('EEG', 'EKG'))
+                    data, info_dict = self._load_file(file, preprocessing_functions, sensor_types=('EEG', 'EKG'))
+
+                name = '%s_Age_%s_Gender_%s' % (str(info_dict['sequence_name']), str(info_dict['age']), info_dict['gender'])
+                output_file_path = os.path.join(output_data_dir, name + '_raw.fif')
+                output_info_path = os.path.join(output_info_dir, name + '.p')
 
                 info = mne.create_info(ch_names, sfreq=self.sampling_freq)
                 fif_array = mne.io.RawArray(data, info)
-                fif_array.save(output_path)
+                fif_array.save(output_file_path)
+
+                save_dict(info_dict, output_info_path)
 
                 print('Split Type: %s, Progress: %g' % (split_type, (i+1)/len(split_files)))
 
 
-if __name__ == '__main__':
-    with Stats():
-        dataset = DataGenerator(data_path='/mhome/gemeinl/data', cache_path='/mhome/chrabasp/data_tmp')
+@click.command()
+@click.option('--data_path', type=click.Path(exists=True), required=True)
+@click.option('--cache_path', type=click.Path(), required=True)
+@click.option('--secs_to_cut', default=120, help='How many seconds are removed from the beginning and end of recording.')
+@click.option('--sampling_freq', default=100.0, help='Signal will be preprocessed to the desired frequency.')
+@click.option('--duration_min', default=5, help='Duration of the recording.')
+@click.option('--max_abs_value', default=0.0008, help='Clip if channel value is grater than max_abs_value')
+@click.option('--val_split_factor', default=0.8, help='How much data is used for training (0.8: 80%)')
+def main(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value, val_split_factor):
+    print('Settings:')
+    print('Data path: %s' % data_path)
+    print('Cache path: %s' % cache_path)
+    print('Seconds to cut (beginning and end): %d' % secs_to_cut)
+    print('Sampling frequency: %d' % sampling_freq)
+    print('Duration of the recording: %d' % duration_min)
+    print('Maximum absolute value: %g' % max_abs_value)
+    print('Train/Validation factor: %f' % val_split_factor)
 
-    dataset.prepare(split_factor=0.8)
+    data_generator = DataGenerator(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value)
+    data_generator.prepare(0.8)
 
-
+if __name__ == "__main__":
+    main()

@@ -1,4 +1,4 @@
-from src.tensorflow.model import SimpleRNN
+from src.dl_tensorflow.model import SimpleRNN
 import unittest
 import numpy as np
 

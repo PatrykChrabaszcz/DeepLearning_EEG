@@ -3,11 +3,13 @@ import logging
 import os
 import sys
 import colorlog
+import pickle
+import json
 
 
-def setup_logging():
+def setup_logging(level=logging.INFO):
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
+    root.setLevel(level)
     format = '%(asctime)s, %(process)-6s %(levelname)-8s: %(message)s'
     date_format = '%H:%M:%S'
     if 'colorlog' in sys.modules and os.isatty(2):
@@ -59,6 +61,16 @@ class Stats:
             print('%s %gs' % (self.name, self.duration))
             for child in self.children:
                 print('\t%s took %g%%' % (child.name, child.duration/self.duration*100))
+
+
+def save_dict(dictionary, path):
+    with open(path, 'w') as f:
+        json.dump(dictionary, f, sort_keys=True, indent=4)
+
+
+def load_dict(path):
+    with open(path, 'r') as f:
+        return json.load(f)
 
 
 # TODO: Use more suited stuff for testing instead of those "if" conditions

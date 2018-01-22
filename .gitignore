@@ -2,10 +2,12 @@
 .idea/
 data/
 logs/
+logs_old/
+results/
 models/
 
-tutoral/data/
-tutoral/logs/
+tutorial/data/
+tutorial/logs/
 tutorial/models
 
 

@@ -1,17 +1,14 @@
-from src.data_reader import SequenceDataReader
-from src.core.metrics import RegressionMetrics
+import logging
+
+import click
+import torch
+from torch.autograd import Variable
+
+from src.data_reading.data_reader import SequenceDataReader
+from src.dl_core.metrics import RegressionMetrics
+from src.utils import setup_logging
 from tutorial.data_reader import TutorialDataReader
 from tutorial.model import TutorialRNN
-from tutorial.model_trainer import ModelTrainer
-from src.utils import Stats, setup_logging
-import click
-import logging
-from src.result_logger import ResultsLogger
-from torch.autograd import Variable
-import torch
-from src.data_reader import SequenceDataReader
-
-from time import strftime
 
 # Initialize logging
 logger = logging.getLogger(__name__)

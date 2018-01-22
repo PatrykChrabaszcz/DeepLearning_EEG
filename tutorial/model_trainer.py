@@ -1,66 +1,58 @@
+from src.dl_core.model_trainer import ModelTrainerBase
+from src.dl_core.model import ModelBase
+from src.dl_core.metrics import RegressionMetrics
 from torch.autograd import Variable
 from torch import nn
 import torch
-from src.core.metrics import ClassificationMetrics, RegressionMetrics
-from src.data_reader import SequenceDataReader
 
 
-class ModelTrainer:
-    def __init__(self, model, learning_rate, train_dr, test_dr, sequence_size, forget_state):
-        self.model = model
-        self.train_dr = train_dr
-        self.test_dr = test_dr
-        self.forget_state = forget_state
+class ModelTrainer(ModelTrainerBase):
+    def __init__(self, model, learning_rate, weight_decay,
+                 train_dr, test_dr, sequence_size, loss_type):
+        super().__init__(model, learning_rate, weight_decay, train_dr, test_dr, sequence_size, loss_type)
+
+        self.cuda = False
+
+        if self.cuda:
+            self.model = self.model.cuda()
+
         self.metrics = RegressionMetrics()
-
         self.criterion = nn.MSELoss()
-        self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-        self.sequence_size = sequence_size
+        self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=self.weight_decay)
 
-        self.train_dr.initialize_epoch(randomize=True, sequence_size=self.sequence_size)
-        self.test_dr.initialize_epoch(randomize=False, sequence_size=self.sequence_size)
+    def _one_iteration(self, batch, time, hidden, labels, update=False):
+        # Forward pass
+        batch = Variable(torch.from_numpy(batch))
+        labels = Variable(torch.from_numpy(labels))
+        if self.cuda:
+            batch = batch.cuda()
+            hidden = hidden[0].cuda(), hidden[1].cuda()
+            labels = labels.cuda()
 
-        self.train_dr.start_readers()
-        self.test_dr.start_readers()
+        outputs, hidden = self.model(batch, hidden)
 
-    def process_one_epoch(self, train=True):
-        dr = self.train_dr if train else self.test_dr
-        iteration = 0
-        try:
-            while True:
-                batch, time, labels, ids = dr.get_batch()
-                batch = Variable(torch.from_numpy(batch))
-                labels = Variable(torch.from_numpy(labels))
-                hidden = self.model.import_state(dr.get_states(ids, forget=self.forget_state))
-                outputs, hidden = self.model(batch, hidden)
+        # Backward pass
+        if update:
+            if self.loss_type == 'classification_last':
+                training_outputs = outputs[:, -1, :]
+                training_labels = labels[:, -1]
+            elif self.loss_type == 'classification_all':
+                outputs_num = outputs.size()[-1]
+                training_outputs = outputs.view(-1, outputs_num)
+                training_labels = labels.view(-1)
+            else:
+                raise NotImplementedError
 
-                # Take the last prediction for loss estimate
-                last_output = outputs[:, -1, :]
-                # Take the last label for loss estimate
-                last_label = labels[:, -1]
+            loss = self.criterion(training_outputs, training_labels)
 
-                loss = self.criterion(last_output, last_label)
+            self.optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm(self.model.parameters(), 0.25)
+            self.optimizer.step()
 
-                #loss = self.criterion(outputs, labels)
-                if train:
-                    self.optimizer.zero_grad()
-                    loss.backward()
-                    self.optimizer.step()
+        return outputs, hidden
 
-                self.metrics.append_results(ids, outputs.data.numpy(), labels.data.numpy(), train=train)
+    def _gather_results(self, ids, outputs, labels, train=True):
+        self.metrics.append_results(ids, outputs.cpu().data.numpy(), labels, train=train)
 
-                dr.set_states(ids, self.model.export_state(hidden))
-
-                iteration += 1
-                if iteration % 100 is 0:
-                    print('Iterations done %d' % iteration)
-
-        except SequenceDataReader.EpochDone:
-            print('%d Iterations in this epoch' % iteration)
-
-            result = self.metrics.finish_epoch(train=train)
-
-            dr.initialize_epoch(randomize=train, sequence_size=self.sequence_size)
-
-            return result
