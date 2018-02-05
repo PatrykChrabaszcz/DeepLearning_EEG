@@ -2,21 +2,26 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 import numpy as np
-from src.dl_pytorch.utils import BNGRU, BNLSTM
 from src.dl_core.model import ModelBase
 import logging
+from src.dl_pytorch.utils import SeparateChannelCNN, AllChannelsCNN, RNN
 
 
 logger = logging.getLogger(__name__)
 
 
 class PytorchModelBase(nn.Module, ModelBase):
-    def __init__(self):
+    def __init__(self, batch_norm, skip_connections):
         super().__init__()
+        self.batch_norm = batch_norm
+        self.skip_connections = skip_connections
 
     @staticmethod
     def add_arguments(parser):
-        return
+        parser.add_argument("--batch_norm", dest="batch_norm", type=int, default=0, choices=[0, 1],
+                            help="Whether to use batch norm or not", )
+        parser.add_argument("--skip_connections", dest="skip_connections", type=int, default=0, choices=[0, 1],
+                            help="Whether to skip connections", )
 
     def save_model(self, path):
         torch.save(self.state_dict(), path)
@@ -38,70 +43,63 @@ class RnnBase(PytorchModelBase):
     cell_mapper = {
         'LSTM': nn.LSTM,
         'GRU': nn.GRU,
-        'BNGRU': BNGRU,
-        'BNLSTM': BNLSTM,
     }
 
     @staticmethod
     def add_arguments(parser):
         PytorchModelBase.add_arguments(parser)
-        parser.add_argument("--hidden_size", dest="hidden_size", type=int, default=128,
-                            help="Number of neurons in the RNN layer.",)
-        parser.add_argument("--num_layers", dest="num_layers", type=int, default=3,
+        parser.add_argument("--rnn_hidden_size", dest="rnn_hidden_size", type=int, default=128,
+                            help="Number of neurons in the RNN layer.")
+        parser.add_argument("--rnn_num_layers", dest="rnn_num_layers", type=int, default=3,
                             help="Number of layers in the RNN network.")
         parser.add_argument("--dropout", dest="dropout", type=float, default=0.0,
                             help="Dropout value.")
-        parser.add_argument("--cell_type", dest="cell_type", type=str, choices=RnnBase.cell_mapper.keys(),
+        parser.add_argument("--rnn_cell_type", dest="rnn_cell_type", type=str, choices=RnnBase.cell_mapper.keys(),
                             default='GRU',
                             help="RNN cell type.")
         parser.add_argument("--use_context", dest="use_context", type=int, choices=[0, 1], default=0,
                             help="If 1 then context information will be used.")
 
-    def __init__(self, input_size, hidden_size, num_layers, output_size, dropout, cell_type, use_context, context_size):
-        super().__init__()
-        args = dir(self)
+    def __init__(self, input_size, rnn_hidden_size, rnn_num_layers, output_size, dropout,
+                 rnn_cell_type, use_context, context_size, **kwargs):
+        super().__init__(**kwargs)
         self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
+        self.rnn_hidden_size = rnn_hidden_size
+        self.rnn_num_layers = rnn_num_layers
         self.output_size = output_size
         self.dropout = dropout
-        self.cell_type = cell_type
+        self.rnn_cell_type = rnn_cell_type
         self.use_context = use_context
         self.context_size = context_size
 
-        args = [a for a in dir(self) if a not in args]
-        for arg in args:
-            logger.debug('RnnBase | attr: %s | val: %s' % (arg, getattr(self, arg)))
-
     def initial_state(self):
-        if self.cell_type in ["LSTM", "BNLSTM"]:
-            return np.array(np.random.normal(0, 1.0, (self.num_layers, self.hidden_size)), dtype=np.float32), \
-                   np.array(np.random.normal(0, 1.0, (self.num_layers, self.hidden_size)), dtype=np.float32)
-        elif self.cell_type in ["GRU", "BNGRU"]:
-            #return np.zeros((self.num_layers, self.hidden_size), dtype=np.float32)
-            random_state = np.random.normal(0, 1.0, (self.num_layers, self.hidden_size))
+        if self.rnn_cell_type == "LSTM":
+            return np.array(np.random.normal(0, 1.0, (self.rnn_num_layers, self.rnn_hidden_size)), dtype=np.float32), \
+                   np.array(np.random.normal(0, 1.0, (self.rnn_num_layers, self.rnn_hidden_size)), dtype=np.float32)
+        elif self.rnn_cell_type == "GRU":
+            random_state = np.random.normal(0, 1.0, (self.rnn_num_layers, self.rnn_hidden_size))
             return np.clip(random_state, -1, 1).astype(dtype=np.float32)
         else:
-            raise NotImplementedError("Function initial_state() not implemented for cell type %s" % self.cell_type)
+            raise NotImplementedError("Function initial_state() not implemented for cell type %s" % self.rnn_cell_type)
 
     # Converts PyTorch hidden state representation into something that can be saved
     def export_state(self, states):
-        if self.cell_type in ["LSTM", "BNLSTM"]:
+        if self.rnn_cell_type == "LSTM":
             states_0 = np.swapaxes(states[0].cpu().data.numpy(), 0, 1)
             states_1 = np.swapaxes(states[1].cpu().data.numpy(), 0, 1)
 
             assert (states_0.shape == states_1.shape)
 
             return [(a, b) for (a, b) in zip(states_0, states_1)]
-        elif self.cell_type in ["GRU", "BNGRU"]:
+        elif self.rnn_cell_type == "GRU":
             states = np.swapaxes(states.cpu().data.numpy(), 0, 1)
             return [s for s in states]
         else:
             raise NotImplementedError
 
-    # Converts PyTorch hidden state representation into something that can be saved
+    # Convert something that was saved into PyTorch representation
     def import_state(self, states):
-        if self.cell_type in ["LSTM", "BNLSTM"]:
+        if self.rnn_cell_type == "LSTM":
             states_0, states_1 = np.stack([s[0] for s in states]), np.stack([s[1] for s in states])
             states_0, states_1 = np.swapaxes(states_0, 1, 0), np.swapaxes(states_1, 1, 0)
 
@@ -110,7 +108,7 @@ class RnnBase(PytorchModelBase):
 
             return states_0, states_1
 
-        elif self.cell_type in ["GRU", "BNGRU"]:
+        elif self.rnn_cell_type == "GRU":
             states = np.stack(states)
             states = np.swapaxes(states, 1, 0)
             states = Variable(torch.from_numpy(states), requires_grad=False)
@@ -120,16 +118,18 @@ class RnnBase(PytorchModelBase):
 
 
 class SimpleRNN(RnnBase):
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         input_size = self.input_size if not self.use_context else self.input_size + self.context_size
-        NetworkClass = self.cell_mapper[self.cell_type]
-        self.rnn = NetworkClass(input_size=input_size, hidden_size=self.hidden_size, num_layers=self.num_layers,
-                                batch_first=True, dropout=self.dropout)
-        self.dropout_layer = nn.Dropout(p=self.dropout)
 
-        self.fc = nn.Linear(in_features=self.hidden_size, out_features=self.output_size)
+        cell = RnnBase.cell_mapper[self.rnn_cell_type]
+        self.rnn = RNN(cell=cell, in_size=input_size, hidden_size=self.rnn_hidden_size, num_layers=self.rnn_num_layers,
+                       dropout=self.dropout, batch_norm=self.batch_norm)
 
+        # self.dropout_layer = nn.Dropout(p=self.dropout)
+
+        self.fc = nn.Linear(in_features=self.rnn_hidden_size, out_features=self.output_size, bias=True)
 
     def forward(self, x, hidden, context):
         if self.use_context:
@@ -138,62 +138,76 @@ class SimpleRNN(RnnBase):
 
         lstm_out, hidden = self.rnn(x, hidden)
         lstm_out = lstm_out.contiguous()
-        lstm_out = self.dropout_layer(lstm_out)
+        #lstm_out = self.dropout_layer(lstm_out)
 
         fc_out = self.fc(lstm_out.view(lstm_out.size(0) * lstm_out.size(1), lstm_out.size(2)))
         fc_out = fc_out.view(lstm_out.size(0), lstm_out.size(1), fc_out.size(1))
         return fc_out, hidden
 
-    def offset_size(self):
+    def offset_size(self, sequence_size):
         return 0
 
 
 class ConvRNN(RnnBase):
-    def __init__(self, cnn_size=10, **kwargs):
+    @staticmethod
+    def add_arguments(parser):
+        RnnBase.add_arguments(parser)
+        parser.add_argument("--cnn_c_layers", dest="cnn_c_layers", type=int, default=3,
+                            help="Number of layers in the first cnn block. "
+                                 "Each channel processed separately the same filters.")
+        parser.add_argument("--cnn_c_channels", dest="cnn_c_channels", type=int, default=10,
+                            help="Number of filters in the first cnn block.")
+        parser.add_argument("--cnn_c_width", dest="cnn_c_width", type=int, default=10,
+                            help="Width in time dimension of the kernels in the first cnn block.")
+        parser.add_argument("--cnn_c_stride", dest="cnn_c_stride", type=int, default=2,
+                            help="Stride for the first CNN block.")
+
+        parser.add_argument("--cnn_f_layers", dest="cnn_f_layers", type=int, default=3,
+                            help="Number of layers in the second cnn block. "
+                                 "All channels processed together")
+        parser.add_argument("--cnn_f_channels", dest="cnn_f_channels", type=int, default=10,
+                            help="Number of filters in the second cnn block.")
+        parser.add_argument("--cnn_f_width", dest="cnn_f_width", type=int, default=10,
+                            help="Width in time dimension of the kernels in the second cnn block.")
+        parser.add_argument("--cnn_f_stride", dest="cnn_f_stride", type=int, default=2,
+                            help="Stride for the second CNN block.")
+
+    def __init__(self, cnn_c_layers, cnn_c_channels, cnn_c_width, cnn_c_stride,
+                 cnn_f_layers, cnn_f_channels, cnn_f_width, cnn_f_stride, **kwargs):
+
         super().__init__(**kwargs)
 
-        k_s = 10
+        out_size = self.input_size * cnn_c_channels
+        self.cnn_c = SeparateChannelCNN(in_size=self.input_size, out_size=out_size, num_layers=cnn_c_layers,
+                                        kernel_size=cnn_c_width, stride=cnn_c_stride, batch_norm=True)
 
-        self.offset = sum([cnn_kernel_size - 1 for cnn_kernel_size in cnn_kernel_sizes])
+        self.cnn_f = AllChannelsCNN(in_size=out_size, out_size=cnn_f_channels, num_layers=cnn_f_layers,
+                                    kernel_size=cnn_f_width, stride=cnn_f_stride, batch_norm=True)
 
-        NetworkClass = self.cell_mapper[self.cell_type]
+        cell = RnnBase.cell_mapper[self.rnn_cell_type]
+        self.rnn = RNN(cell=cell, in_size=cnn_f_channels, hidden_size=self.rnn_hidden_size,
+                       num_layers=self.rnn_num_layers, dropout=self.dropout, batch_norm=self.batch_norm)
 
-        # For each input channel
-        self.rnn = NetworkClass(input_size=self.input_size*k_s, hidden_size=self.hidden_size, num_layers=self.num_layers,
-                                batch_first=True, dropout=self.dropout)
-        self.dropout_layer = nn.Dropout(p=self.dropout)
-        self.fc = nn.Linear(in_features=self.hidden_size, out_features=self.output_size)
+        # self.dropout_layer = nn.Dropout(p=self.dropout)
 
-        self.conv_1 = nn.Conv2d(in_channels=1, out_channels=cnn_size, kernel_size=(k_s, 1))
-        self.conv_1 = nn.Conv2d(in_channels=1, out_channels=cnn_size, kernel_size=(k_s, 1))
-        self.conv_1_dropout = nn.Dropout(self.dropout)
-        self.non_lin_1 = nn.ReLU()
+        self.fc = nn.Linear(in_features=self.rnn_hidden_size, out_features=self.output_size, bias=True)
 
     def forward(self, x, hidden, context):
-        # x Has shape [batch_size, sequence_length, input_dim]
-        x = x.unsqueeze(1)
-        # Now x Has shape [batch_size, 1, sequence_length, input_dim]
-        x = self.conv_1(x)
-        x = self.conv_1_dropout(x)
-        x = self.non_lin_1(x)
-        # Now x Has shape [batch_size, k_s, sequence_length, input_dim]
-        x = x.transpose(1, 2).contiguous()
-        # Now x Has shape [batch_size, sequence_length, k_s,  input_dim]
-        x = x.view(x.size(0), x.size(1), x.size(2)*x.size(3))
-        # Now x Has shape [batch_size, sequence_length, k_s * input_dim]
+        x = self.cnn_c(x)
+        x = self.cnn_f(x)
 
         lstm_out, hidden = self.rnn(x, hidden)
-        lstm_out = self.dropout_layer(lstm_out)
         lstm_out = lstm_out.contiguous()
+        # lstm_out = self.dropout_layer(lstm_out)
+
         fc_out = self.fc(lstm_out.view(lstm_out.size(0) * lstm_out.size(1), lstm_out.size(2)))
         fc_out = fc_out.view(lstm_out.size(0), lstm_out.size(1), fc_out.size(1))
-        print(fc_out.size())
         return fc_out, hidden
 
-    def offset_size(self):
-        return self.offset
-
-
+    def offset_size(self, sequence_size):
+        out_seq_size = self.cnn_c.out_seq_size(sequence_size)
+        out_seq_size = self.cnn_f.out_seq_size(out_seq_size)
+        return sequence_size - out_seq_size
 
 
 # class BNLSTM(SimpleRNN):

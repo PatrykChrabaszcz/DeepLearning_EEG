@@ -115,6 +115,10 @@ class SequenceDataReader:
         parser.add_argument("--forget_state", type=int, dest='forget_state', default=0, choices=[0, 1],
                             help="If set to 1 then state will not be forward propagated between subsequences from the "
                                  "same example.")
+        parser.add_argument("--cv_n", type=int, dest='cv_n', default=5,
+                            help="How many folds are used for cross validation.")
+        parser.add_argument("--cv_k", type=int, dest='cv_k', default=4,
+                            help="Which fold is used for validation. Indexing starts from 0!")
 
     def __init__(self,
                  data_path,
@@ -126,6 +130,8 @@ class SequenceDataReader:
                  balanced=True,
                  allow_smaller_batch=False,
                  continuous=False,
+                 cv_n=5,
+                 cv_k=4,
                  **kwargs):
 
         self.data_path = data_path
@@ -144,6 +150,10 @@ class SequenceDataReader:
 
         # If set to true then after example is finished it will be immediately reset
         self.continuous = continuous
+
+        self.cv_n = cv_n
+        self.cv_k = cv_k
+        assert cv_k < cv_n, "Fold used for validation has index which is higher than the number of folds."
 
         # Info Queue -> Information that is used to read a proper chunk of data from a proper file
         self.info_queue = multiprocessing.Queue()
@@ -219,8 +229,8 @@ class SequenceDataReader:
     @staticmethod
     def read_sample_function(info_queue, output_queue, examples_dict):
         signal.signal(signal.SIGINT, signal.SIG_IGN)
-        logger.info('New reader process is running ...')
 
+        logger.info('New reader process is running ...')
         while True:
             example_id, serialized = info_queue.get()
             if example_id is not None:
@@ -297,14 +307,14 @@ class SequenceDataReader:
 
     def initialize_epoch(self, sequence_size, randomize):
         if self.data_type is not self.Train_Data and randomize:
-            logger.warn('Are you sure you want to set randomize=True for non training data?')
+            logger.warning('Are you sure you want to set randomize=True for non training data?')
 
         if self.continuous and self.epoch_initialized:
             logger.debug('Trying to initialize a new epoch (%s) but mode is set to continuous, skipping'
                          % self.data_type)
             return
 
-        logger.debug('Initialize new epoch (%s)' % self.data_type)
+        logger.info('Initialize new epoch (%s)' % self.data_type)
         # Read examples that we were unable to process
         for i in range(self.samples_count):
             self.data_queue.get()

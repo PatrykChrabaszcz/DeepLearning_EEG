@@ -1,18 +1,23 @@
 from src.data_reading.data_reader import SequenceDataReader
 from src.dl_core.metrics import create_metrics
 from src.utils import Stats
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 class ModelTrainerBase:
-    loss_types = ['classification_all', 'classification_last']
-    objective_types = ['regression', 'classification']
+    _objective_types = ['MeanSquaredError', 'CrossEntropy', 'L1Loss']
 
-    def __init__(self, model, lr, l2_decay, loss_type, objective_type, **kwargs):
+    objective_types = [o + '_all' for o in _objective_types].extend([o + '_last' for o in _objective_types])
+
+    def __init__(self, model, lr, l2_decay, objective_type, optimizer, **kwargs):
         self.model = model
         self.learning_rate = lr
         self.weight_decay = l2_decay
-        self.loss_type = loss_type
         self.objective_type = objective_type
+        self.optimizer = optimizer
 
     @staticmethod
     def add_arguments(parser):
@@ -20,19 +25,17 @@ class ModelTrainerBase:
                             help="Learning rate used for training.")
         parser.add_argument("--l2_decay", type=float, dest='l2_decay', default=0.0,
                             help="L2 regularization coefficient.")
-        parser.add_argument("--loss_type", type=str, dest='loss_type', choices=ModelTrainerBase.loss_types,
-                            default='classification_last',
+        parser.add_argument("--objective_type", type=str, dest='objective_type', choices=ModelTrainerBase.objective_types,
+                            default='CrossEntropy_last',
                             help="Whether loss is propagated from all timestamps or just from the last one.")
-        parser.add_argument("--objective_type", type=str, dest='objective_type',
-                            choices=ModelTrainerBase.objective_types, default='classification',
-                            help="TODO: Write help message")
         parser.add_argument("--iterations_per_epoch", type=int, dest='iterations_per_epoch', default=0,
                             help="If greater than 0 then this many iterations will correspond to one epoch.")
+        parser.add_argument("--optimizer", type=str, choices=['Adam', 'SGD'], dest='optimizer', default='Adam',
+                            help="Optimizer that is used to update the weights.")
 
     # If iterations is None then run until EpochDone exception is emitted
     def process_one_epoch(self, forget_state, sequence_size, data_reader, randomize=False, update=False, iterations=None):
         dr = data_reader
-        print('Initializing the epoch with sequence size %d' % sequence_size)
         dr.initialize_epoch(sequence_size=sequence_size, randomize=randomize)
 
         time_stats = Stats('Time Statistics')
@@ -51,6 +54,7 @@ class ModelTrainerBase:
 
                     with get_batch_stats:
                         ids, batch, time, labels, contexts = dr.get_batch()
+                        labels = labels[:, self.model.offset_size(sequence_size):]
                         hidden = self.model.import_state(dr.get_states(ids, forget=forget_state))
 
                     with one_iteration_stats:
@@ -64,10 +68,10 @@ class ModelTrainerBase:
 
                     iteration += 1
                     if iteration % 100 is 0:
-                        print('Iterations done %d' % iteration)
+                        logger.debug('Iterations done %d' % iteration)
 
         except SequenceDataReader.EpochDone:
-            print('%d Iterations in this epoch' % iteration)
+            logger.info('%d Iterations in this epoch' % iteration)
             return metrics
 
     def _one_iteration(self, batch, time, hidden, labels, context, update=False):

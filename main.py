@@ -7,6 +7,7 @@ import src.data_reading as reader_module
 from src.result_logger import ResultsLogger
 from src.utils import setup_logging
 import configparser
+import json
 
 # Initialize logging
 logger = logging.getLogger(__name__)
@@ -82,29 +83,32 @@ def main():
     model_args, trainer_args, reader_args = extract_arguments(args.conf_file, unknown_args,
                                                               ModelClass, ModelTrainer, ReaderClass)
 
-    logger.debug(args)
-    logger.debug(model_args)
-    logger.debug(reader_args)
+    logger.debug('Args         ' + json.dumps(vars(args), indent=2))
+    logger.debug('Model Args   ' + json.dumps(model_args, indent=2))
+    logger.debug('Reader Args  ' + json.dumps(reader_args, indent=2))
+    logger.debug('Trainer Args ' + json.dumps(trainer_args, indent=2))
+
     context_size = ReaderClass.context_size(**reader_args)
     input_size = ReaderClass.input_size(**reader_args)
     output_size = ReaderClass.output_size(**reader_args)
 
     model = ModelClass(input_size=input_size, output_size=output_size, context_size=context_size, **model_args)
 
-    logger.info('Printing model structure (Num of parameters %d)' % model.count_params())
-
     # Initialize data readers
-    offset_size = model.offset_size()
+    offset_size = model.offset_size(sequence_size=reader_args['sequence_size'])
     logger.info('Data readers will use an offset:  %d' % offset_size)
 
+    # Training data reader
     continuous = trainer_args['iterations_per_epoch'] > 0
     train_dr = ReaderClass(offset_size=offset_size, allow_smaller_batch=False, continuous=continuous,
                            state_initializer=model.initial_state, data_type=ReaderClass.Train_Data, **reader_args)
 
+    # Validation data reader
     reader_args['balanced'] = False
     valid_dr = ReaderClass(offset_size=offset_size, allow_smaller_batch=True, continuous=False,
                            state_initializer=model.initial_state, data_type=ReaderClass.Validation_Data, **reader_args)
 
+    # Initialize model trainer
     model_trainer = ModelTrainer(model=model, **trainer_args)
 
     experiment_name = 'Model(%s)_Reader(%s)_Time(%s)' % (args.model_class, args.reader_class, strftime("%Y%m%d-%H%M%S"))
@@ -126,7 +130,7 @@ def main():
                                                       iterations=iterations)
             results = metrics.get_summarized_results()
             logger.info('Training results (online):')
-            print(results)
+            logger.info(results)
             results_logger.log_metrics(results, epoch, forget_state=reader_args['forget_state'], train=True)
 
             metrics = model_trainer.process_one_epoch(forget_state=False,
@@ -134,8 +138,8 @@ def main():
                                                       data_reader=valid_dr, randomize=False, update=False)
             results = metrics.get_summarized_results()
             logger.info('Validation results (remember)')
-            print(results)
-            print("\n\n\n\n")
+            logger.info(results)
+            print("\n\n")
             results_logger.log_metrics(results, epoch, forget_state=False, train=False)
 
             if results['loss'] == np.nan:
@@ -151,8 +155,9 @@ def main():
 
             epoch += 1
 
-    except Exception as e:
-        logger.warn('Exception detected, will try to stop the readers before shutting down...')
+    # Did you know that KeyboardInterrupt does not derive from Exception?
+    except (Exception, KeyboardInterrupt) as e:
+        logger.warning('Exception detected, will try to stop the readers before shutting down...')
         train_dr.stop_readers()
         valid_dr.stop_readers()
         raise e

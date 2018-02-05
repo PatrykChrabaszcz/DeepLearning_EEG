@@ -11,14 +11,9 @@ logger = logging.getLogger(__name__)
 
 class FingerDataReader(SequenceDataReader):
     class ExampleInfo(SequenceDataReader.SequenceExampleInfo):
-        def __init__(self, example_id, data_ctypes, data_shape, labels_ctypes, labels_shape,
-                     offset_size=0, limit_duration=None):
+        def __init__(self, example_id, file_path, offset_size=0):
             super().__init__(example_id=example_id, offset_size=offset_size)
 
-            self.data = np.frombuffer(data_ctypes, dtype=np.float32, count=int(np.prod(data_shape)))
-            self.data.shape = data_shape
-            self.labels = np.frombuffer(labels_ctypes, dtype=np.float32, count=int(np.prod(labels_shape)))
-            self.labels.shape = labels_shape
 
             self.length = self.data.shape[0]
             self.length = self.length if limit_duration is None else min(self.length, limit_duration)

@@ -5,16 +5,17 @@ from torch import nn
 import torch
 
 
-
 class ModelTrainer(ModelTrainerBase):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
         self.cuda = True
-        if self.objective_type == 'classification':
+        if 'CrossEntropy' in self.objective_type:
             self.criterion = nn.CrossEntropyLoss()
-        elif self.objective_type == 'regression':
+        elif 'MeanSquaredError' in self.objective_type:
             self.criterion = nn.MSELoss()
+        elif 'L1Loss' in self.objective_type:
+            self.criterion = nn.L1Loss()
         else:
             raise NotImplementedError('This objective type is not implemented inside the ModelTrainer class')
 
@@ -22,7 +23,14 @@ class ModelTrainer(ModelTrainerBase):
             self.model = self.model.cuda()
             self.criterion = self.criterion.cuda()
 
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+        if self.optimizer == 'Adam':
+            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate,
+                                              weight_decay=self.weight_decay)
+        elif self.optimizer == 'SGD':
+            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.learning_rate, momentum=0.9,
+                                             weight_decay=self.weight_decay)
+        else:
+            raise NotImplementedError('This optimizer is not implemented')
 
     def _one_iteration(self, batch, time, hidden, labels, context, update=False):
         if update:
@@ -49,10 +57,10 @@ class ModelTrainer(ModelTrainerBase):
 
         outputs, hidden = self.model(batch, hidden, context)
 
-        if self.loss_type == 'classification_last':
+        if '_last' in self.objective_type:
             training_outputs = outputs[:, -1, :]
             training_labels = labels[:, -1]
-        elif self.loss_type == 'classification_all':
+        elif '_all' in self.objective_type:
             outputs_num = outputs.size()[-1]
             training_outputs = outputs.view(-1, outputs_num)
             training_labels = labels.view(-1)
@@ -65,7 +73,15 @@ class ModelTrainer(ModelTrainerBase):
             self.optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm(self.model.parameters(), 1)
+
             self.optimizer.step()
+
+        #     total_norm = 0
+        #     for p in self.model.parameters():
+        #         param_norm = p.grad.data.norm(2)
+        #         total_norm += param_norm ** 2
+        #     total_norm = total_norm ** (1. / 2)
+        #     print('Gradient norm: ', total_norm)
 
         return outputs, hidden, loss
 

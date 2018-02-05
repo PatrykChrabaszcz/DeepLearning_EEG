@@ -32,7 +32,6 @@ logger = logging.getLogger(__name__)
 #   "gender": "F", - Gender of the subject
 #   "number": "00000003", - Subject specific number
 #   "sequence_name": "00000003_s02_a01" - Unique id that can be used to identify the recording
-
 # Cast all prediction problems (all label_types) as  classification problem
 
 class AnomalyDataReader(SequenceDataReader):
@@ -45,6 +44,8 @@ class AnomalyDataReader(SequenceDataReader):
             # TODO save normalization in the dictionary
             self.age = (info_dict['age'] - 49.295620438) / 17.3674915241
             self.label = info_dict[label_type]
+            self.mean = np.array(info_dict['mean'], dtype=np.float32)
+            self.std = np.array(info_dict['std'], dtype=np.float32)
 
             self.file_handler = mne.io.read_raw_fif(info_dict['data_file'], preload=False, verbose='error')
             self.length = self.file_handler.n_times
@@ -66,6 +67,7 @@ class AnomalyDataReader(SequenceDataReader):
             index, sequence_size = serialized
             data = self.file_handler.get_data(None, index, index + sequence_size).astype(np.float32)
             data = np.transpose(data)
+            data = (data - self.mean) / self.std
             # Time might be needed for some advanced models like PhasedLSTM
             time = np.reshape(np.arange(index, index + sequence_size), newshape=[sequence_size, 1])
 
@@ -79,7 +81,6 @@ class AnomalyDataReader(SequenceDataReader):
                             help="Path to the directory containing the data")
 
     def _initialize(self, label_type, limit_examples, limit_duration, **kwargs):
-        print('Label Type', label_type)
         self.label_type = label_type
 
         self.limit_examples = limit_examples
@@ -94,17 +95,25 @@ class AnomalyDataReader(SequenceDataReader):
         logger.debug('limit_duration: %s' % self.limit_duration)
 
     def _create_examples(self):
-        logger.info('Will create examples for this dataset. '
-                    'Only the header info for each file is preloaded to the memory.'
-                    'Parallel threads will read the data online.')
+        logger.info('Will create examples for this dataset.\n'
+                    'Only the header info for each file is preloaded to the memory.\n'
+                    'Parallel threads will read the data online.\n')
 
-        # Load metadata from the info dictionaries
-        info_dir = os.path.join(self.data_path, self.data_type, 'info')
-        info_files = os.listdir(info_dir)
+        # Train and Validation are located inside the 'train' folder
+        if self.data_type == self.Validation_Data or self.data_type == self.Train_Data:
+            folder_name = 'train'
+        elif self.data_type == self.Test_Data:
+            folder_name = 'test'
+        else:
+            raise NotImplementedError('data_type is not from the set {train, validation, test}')
+
+        # Load data into dictionaries from the info json files
+        info_dir = os.path.join(self.data_path, folder_name, 'info')
+        info_files = sorted(os.listdir(info_dir))
         info_dicts = [load_dict(os.path.join(info_dir, i_f)) for i_f in info_files]
 
         for info_dict, info_file in zip(info_dicts, info_files):
-            info_dict['data_file'] = os.path.join(self.data_path, self.data_type, 'data', info_file[:-2] + '_raw.fif')
+            info_dict['data_file'] = os.path.join(self.data_path, folder_name, 'data', info_file[:-2] + '_raw.fif')
             # Compute additional fields (used for new labels and context information)
             info_dict['age_class'] = 1 if info_dict['age'] >= 49 else 0
             info_dict['gender_class'] = 1 if info_dict['gender'] == 'M' else 0
@@ -113,9 +122,24 @@ class AnomalyDataReader(SequenceDataReader):
         labels = list(set([info_dict[self.label_type] for info_dict in info_dicts]))
 
         logger.info('Will use %s as a label type' % self.label_type)
-        logger.info('Report for %s:' % self.data_type)
 
-        logger.info('Create info objects for the files')
+        logger.info('Create info objects for the files (Number of all sequences: %s' % len(info_dicts))
+
+        if self.data_type == self.Validation_Data or self.data_type == self.Train_Data:
+            # Split out the data according to the CV fold
+
+            start = int(self.cv_k/self.cv_n * len(info_dicts))
+            end = int((self.cv_k+1)/self.cv_n * len(info_dicts))
+            logger.info("Using CV split cv_n: %s, cv_k: %s, start: %s, end: %s" % (self.cv_n, self.cv_k, start, end))
+
+            validation_info_dicts = info_dicts[start:end]
+            train_info_dicts = info_dicts[:start] + info_dicts[end:]
+
+            if self.data_type == self.Train_Data:
+                info_dicts = train_info_dicts
+            else:
+                info_dicts = validation_info_dicts
+
         for i, label in enumerate(labels):
             label_info_dicts = [info_dict for info_dict in info_dicts if info_dict[self.label_type] == label]
             label_info_dicts = label_info_dicts[:self.limit_examples]
@@ -127,7 +151,7 @@ class AnomalyDataReader(SequenceDataReader):
             logger.debug('Label %s: Number of recordings %d, Cumulative Length %d' %
                          (label, len(self.examples[i]), sum([e.get_length() for e in self.examples[i]])))
 
-        logger.debug('Number of sequences in the dataset %d' % nested_list_len(self.examples))
+        logger.info('Number of sequences in the dataset %d' % nested_list_len(self.examples))
 
         # Additional data structure (faster access for some operations)
         for class_examples in self.examples:

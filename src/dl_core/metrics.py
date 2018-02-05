@@ -155,21 +155,31 @@ class ClassificationMetrics:
 
 
 class RegressionMetrics:
-    class Example_Statistics:
+    class ExampleStatistics:
         def __init__(self, example_id):
             self.example_id = example_id
             self._cnt = 0
-            self._loss = 0
+
+            self._predictions = []
+            self._labels = []
 
         def append(self, output, labels):
-            output = output.flatten()
-            labels = labels.flatten()
-            assert(len(output) == len(labels))
-            self._loss += np.sum(np.square(output-labels))
+            assert output.shape == labels.shape
+            self._predictions.append(output)
+            self._labels.append(labels)
             self._cnt += len(output)
 
-        def loss(self):
-            return self._loss/self._cnt
+        def stats(self):
+            predictions = np.concatenate(self._predictions)
+            labels = np.concatenate(self._labels)
+
+            loss = np.mean(np.square(predictions - labels))
+
+            correlations = []
+            for i in range(predictions.shape[1]):
+                correlations.append(np.corrcoef(predictions[:, i], labels[:, i])[0][1])
+
+            return loss, correlations
 
     def __init__(self):
         self.results = {}
@@ -177,21 +187,29 @@ class RegressionMetrics:
         self.examples = 0
 
     def append_results(self, ids, output, labels, loss, batch_size):
-        pass
         self.loss.append(loss*batch_size)
         self.examples += batch_size
 
         assert len(ids) == len(output)
         assert len(ids) == len(labels)
 
-        # for example_id, o, l in zip(ids, output, labels):
-        #     if example_id not in self.results:
-        #         self.results[example_id] = ClassificationMetrics.ExampleStatistics(example_id)
-        #     self.results[example_id].append(o, l)
+        for example_id, o, l in zip(ids, output, labels):
+            if example_id not in self.results:
+                self.results[example_id] = RegressionMetrics.ExampleStatistics(example_id)
+            self.results[example_id].append(o, l)
 
     def get_summarized_results(self):
 
         output = {}
+
+        for i, r in self.results.items():
+            print(r.stats())
+            break
+            #stats = self.results
+
+
+
+
         #
         #losses = []
         # losses_2nd = []
@@ -248,12 +266,12 @@ class RegressionMetrics:
 
 
 def create_metrics(objective_type):
-    if objective_type == 'classification':
+    if 'CrossEntropy' in objective_type:
         return ClassificationMetrics()
-    elif objective_type == 'regression':
+    elif 'MeanSquaredError' in objective_type or 'L1Loss' in objective_type:
         return RegressionMetrics()
     else:
-        raise  NotImplementedError('In create_metrics(...) objective_type=%s is not implemented' % objective_type)
+        raise NotImplementedError('In create_metrics(...) objective_type=%s is not implemented' % objective_type)
 
 
 if __name__ == "__main__":

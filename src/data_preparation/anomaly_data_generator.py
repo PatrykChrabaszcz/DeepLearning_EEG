@@ -89,11 +89,13 @@ class DataGenerator:
                 [age] = re.findall("Age:(\d+)", patient_id)
                 [gender] = re.findall("\s([F|M|X])\s", patient_id)
                 [number] = re.findall("^(\d{8})", patient_id)
+                [date] = re.findall("s\d{2}_(\d{4}_\d{2}_\d{2})", file_path)
 
             self.age = age
             self.gender = gender
             self.number = number
             self.sequence_name = os.path.basename(file_path)[:-4]
+            self.recording_date = date
 
             # TODO: We would like to read some more information from the description files
             # txt_file_path = file_path[:-8] + '.txt'
@@ -180,7 +182,8 @@ class DataGenerator:
             'number': file_info.number,
             'anomaly': 1 if anomaly_cnt == 3 else 0,
             'file_name': file_name,
-            'sequence_name': file_info.sequence_name
+            'sequence_name': file_info.sequence_name,
+            'recording_date': file_info.recording_date
         }
 
         return data, info_dictionary
@@ -199,47 +202,20 @@ class DataGenerator:
 
         return preprocessing_functions
 
-    def prepare(self, split_factor):
+    def prepare(self):
         train_files, train_labels = self._get_all_sorted_file_names_and_labels(train=True)
         assert len(train_files) == len(train_labels) and len(train_files) != 0
 
         test_files, test_labels = self._get_all_sorted_file_names_and_labels(train=False)
         assert len(test_files) == len(test_labels) and len(test_files) != 0
 
-        # Find out split index for train and validation
-        split_index = int(len(train_files) * split_factor)
-
-        val_files = train_files[split_index:]
-
-        train_files = train_files[:split_index]
-
         # Find out normalization statistics:
         preprocessing_functions = self.default_preprocessing_functions()
-        norm_stats = None
 
         ch_names = DataGenerator.wanted_electrodes['EEG'] + DataGenerator.wanted_electrodes['EKG']
 
-        for i, train_file in enumerate(train_files):
-            try:
-                data, _ = self._load_file(train_file, preprocessing_functions, sensor_types=('EEG', 'EKG1'))
-            except RuntimeError:
-                data, _ = self._load_file(train_file, preprocessing_functions, sensor_types=('EEG', 'EKG'))
-            norm_stats = self.RunningNormStats(ch_names=ch_names) if norm_stats is None else norm_stats
-            norm_stats.append_data(data)
-
-            print('Find normalization, Progress %g' % ((i+1) / len(train_files)))
-
-        # Save Norm statistics
-        os.makedirs(self.cache_path, exist_ok=True)
-        norm_stats.save(os.path.join(self.cache_path, 'normalization_stats.json'))
-
-        mean = norm_stats.mean.astype(dtype=np.float32)
-        stdv = norm_stats.stdv.astype(dtype=np.float32)
-
-        preprocessing_functions.append(lambda data, fs: ((data-mean)/stdv, fs))
-
-        for split_type, split_files in zip(['train', 'validation', 'test'],
-                                           [train_files, val_files, test_files]):
+        for split_type, split_files in zip(['train', 'test'],
+                                           [train_files, test_files]):
 
             output_data_dir = os.path.join(self.cache_path, split_type, 'data')
             output_info_dir = os.path.join(self.cache_path, split_type, 'info')
@@ -252,7 +228,14 @@ class DataGenerator:
                 except RuntimeError:
                     data, info_dict = self._load_file(file, preprocessing_functions, sensor_types=('EEG', 'EKG'))
 
-                name = '%s_Age_%s_Gender_%s' % (str(info_dict['sequence_name']), str(info_dict['age']), info_dict['gender'])
+                # Find normalization for the data
+                mean = list(str(f) for f in np.mean(data, axis=1, dtype=np.float32))
+                std = list(str(f) for f in np.std(data, axis=1, dtype=np.float32))
+                info_dict['mean'] = mean
+                info_dict['std'] = std
+
+                name = '%s_%s_Age_%s_Gender_%s' % (str(info_dict['recording_date']), str(info_dict['sequence_name']),
+                                                   str(info_dict['age']), info_dict['gender'])
                 output_file_path = os.path.join(output_data_dir, name + '_raw.fif')
                 output_info_path = os.path.join(output_info_dir, name + '.p')
 
@@ -272,8 +255,7 @@ class DataGenerator:
 @click.option('--sampling_freq', default=100.0, help='Signal will be preprocessed to the desired frequency.')
 @click.option('--duration_min', default=5, help='Duration of the recording.')
 @click.option('--max_abs_value', default=0.0008, help='Clip if channel value is grater than max_abs_value')
-@click.option('--val_split_factor', default=0.8, help='How much data is used for training (0.8: 80%)')
-def main(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value, val_split_factor):
+def main(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value):
     print('Settings:')
     print('Data path: %s' % data_path)
     print('Cache path: %s' % cache_path)
@@ -281,10 +263,10 @@ def main(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_ab
     print('Sampling frequency: %d' % sampling_freq)
     print('Duration of the recording: %d' % duration_min)
     print('Maximum absolute value: %g' % max_abs_value)
-    print('Train/Validation factor: %f' % val_split_factor)
 
     data_generator = DataGenerator(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value)
-    data_generator.prepare(0.8)
+    data_generator.prepare()
+
 
 if __name__ == "__main__":
     main()

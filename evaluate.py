@@ -1,10 +1,11 @@
 import logging
 import re
 from os import makedirs
-
+import os
 import click
+import json
 
-from src.data_reading.data_reader import AnomalyDataReader
+from src.data_reading.anomaly_data_reader import AnomalyDataReader
 from src.data_reading.data_reader import SequenceDataReader
 from src.dl_pytorch.model_trainer import ModelTrainer
 from src.utils import setup_logging
@@ -17,12 +18,13 @@ setup_logging()
 @click.command()
 @click.option('--data_path', type=click.Path(exists=True), required=True)
 @click.option('--model_path', type=click.Path(exists=True), required=True)
+@click.option('--log_path', type=click.Path(exists=True), required=True)
 @click.option('--sequence_size', default=500)
 @click.option('--batch_size', default=16)
 @click.option('--readers_count', default=2)
 @click.option('--limit_duration', default=None)
 @click.option('--limit_examples', default=None)
-def main(data_path, model_path, sequence_size, batch_size, readers_count, limit_duration, limit_examples):
+def main(data_path, model_path, log_path, sequence_size, batch_size, readers_count, limit_duration, limit_examples):
 
     if limit_examples is not None:
         limit_examples = int(limit_examples)
@@ -32,32 +34,34 @@ def main(data_path, model_path, sequence_size, batch_size, readers_count, limit_
     from src.dl_pytorch.model import SimpleRNN
     logger.info('Will use PyTorch backend')
 
-    [hidden_size] = re.findall('HiddenSize\((\d+)\)', model_path)
-    [num_layers] = re.findall('Layers\((\d+)\)', model_path)
-    [cell_type] = re.findall('Cell\((\w+)\)', model_path)
-    [label_type] = re.findall('LabelType\((\w+)\)', model_path)
-    [use_context] = re.findall('Context\((\w+)\)', model_path)
-    context_size = AnomalyDataReader.context_sizes[label_type]
-    model = SimpleRNN(input_size=22, hidden_size=int(hidden_size), num_layers=int(num_layers), output_size=2,
-                      dropout=0.0, cell_type=cell_type, use_context=use_context=='True', context_size=context_size)
+    with open(os.path.join(log_path, 'model_args.json')) as f:
+        model_args = json.load(f)
+    with open(os.path.join(log_path, 'trainer_args.json')) as f:
+        trainer_args = json.load(f)
+        trainer_args["loss_type"] = "classification_all"
+    with open(os.path.join(log_path, 'reader_args.json')) as f:
+        reader_args = json.load(f)
+
+    context_size = AnomalyDataReader.context_size(**reader_args)
+    input_size = AnomalyDataReader.input_size(**reader_args)
+    output_size = AnomalyDataReader.output_size(**reader_args)
+
+    model = SimpleRNN(input_size=input_size, output_size=output_size, context_size=context_size, **model_args)
     model.load_model(model_path)
 
     # Initialize data readers
-    dr_kwargs = {
-        'cache_path': data_path,
-        'label_type': label_type,
-        'limit_examples': limit_examples,
-        'limit_duration': limit_duration,
-        'batch_size': batch_size,
-        'readers_count': readers_count,
-        'allow_smaller_batch': True,
-        'state_initializer': model.initial_state
-    }
-    train_dr = AnomalyDataReader(data_type=SequenceDataReader.Train_Data, **dr_kwargs)
-    valid_dr = AnomalyDataReader(data_type=SequenceDataReader.Validation_Data, **dr_kwargs)
-    test_dr = AnomalyDataReader(data_type=SequenceDataReader.Test_Data, **dr_kwargs)
+    offset_size = model.offset_size()
+    train_dr = AnomalyDataReader(offset_size=offset_size, allow_smaller_batch=True, continuous=False,
+                                 state_initializer=model.initial_state, data_type=AnomalyDataReader.Train_Data,
+                                 **reader_args)
+    valid_dr = AnomalyDataReader(offset_size=offset_size, allow_smaller_batch=True, continuous=False,
+                                 state_initializer=model.initial_state, data_type=AnomalyDataReader.Validation_Data,
+                                 **reader_args)
+    test_dr = AnomalyDataReader(offset_size=offset_size, allow_smaller_batch=True, continuous=False,
+                                state_initializer=model.initial_state, data_type=AnomalyDataReader.Test_Data,
+                                **reader_args)
 
-    model_trainer = ModelTrainer(model, 0.0, 0.0, sequence_size, loss_type='classification_all')
+    model_trainer = ModelTrainer(model=model, **trainer_args)
 
     logger.info('Number of parameters in the model %d' % model.count_params())
 
@@ -69,9 +73,8 @@ def main(data_path, model_path, sequence_size, batch_size, readers_count, limit_
 
         print('Results for %s' % name)
 
-        print(metrics.get_summarized_results())
         makedirs('results', exist_ok=True)
-        metrics.save_detailed_output('results/%s.json'%name)
+        metrics.save_detailed_output('results/%s.json' % name)
         dr.stop_readers()
 
 if __name__ == '__main__':
