@@ -1,0 +1,6 @@
+# Model
+l2_decay real [0.0000001, 0.001] [0.001] log
+lr real [0.0001, 0.01] [0.001] log
+rnn_num_layers integer [1, 4] [2]
+batch_norm categorical {0, 1} [1]
+dropout real [0.0, 0.9] [0.9]

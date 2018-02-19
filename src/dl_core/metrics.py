@@ -1,159 +1,173 @@
-import numpy as np
 from src.utils import save_dict
+import numpy as np
+import json
+import os
 
 
 class ClassificationMetrics:
     class ExampleStatistics:
-        def __init__(self, example_id):
+        """
+        I would use metrics from a library but that implementation is super slow,
+        Variable names here might be confusing, names with X indicate statistics over examples
+        where each example has the same weight. For names without X longer examples might contribute
+        more to the aggregated statistics
+
+        """
+        def __init__(self, example_id, labels_cnt):
             self.example_id = example_id
-            self._cnt = 0
-            self._cnt_2nd = 0
-            self._loss = 0
-            self._loss_2nd = 0
-            self._votes = [0, 0]
-            self._weights = [0, 0]
-            self._log_weights = [0, 0]
+            self._cnt_all = 0
+            self._log_loss_all = 0
+            self._acc_all = 0
+            self._cnt_end = 0
+            self._log_loss_end = 0
+            self._log_loss_end_last = 0
+            self._acc_end = 0
+            self._acc_end_last = 0
 
-            self._votes_80p = [0, 0]
-            self._votes_90p = [0, 0]
+            self._log_prob_all_g = 0
+            self._log_prob_all_a = 0
 
-            # If the last prediction was correct
-            self._last_correct = 0
+            self._log_prob_end_g = 0
+            self._log_prob_end_a = 0
+
+            self.labels_cnt = labels_cnt
 
         def append(self, output, labels):
-            #print(output, labels)
             assert (len(output) == len(labels))
 
-            m = np.max(output, axis=1, keepdims=True)
-            x = output - m
-            output_exp = np.exp(x)
+            labels_one_hot = np.zeros(shape=(len(labels), self.labels_cnt))
+            for c in range(self.labels_cnt):
+                labels_one_hot[labels == c, c] = 1
 
-            prob = output_exp / np.sum(output_exp, axis=1, keepdims=True)
+            output_labels = np.argmax(output, axis=1)
+            output_exp = np.exp(output - np.max(output, axis=1, keepdims=True))
+            output_prob = output_exp / np.sum(output_exp, axis=1, keepdims=True)
+            eps = 1e-10
+            output_prob = np.clip(output_prob, eps, 1 - eps)
+            losses = -np.sum(labels_one_hot * np.log(output_prob), axis=1)
+            accuracy = output_labels == labels
 
-            labels = np.expand_dims(labels, axis=1)
-            correct_label_prob = np.sum(prob * np.hstack((1-labels, labels)), axis=1)
-            bad_label_prob = 1 - correct_label_prob
+            log_weighted_prob = np.log(output_prob)
+            log_weighted_prob_g = log_weighted_prob[np.arange(len(output)), labels]
 
-            self._votes[0] += np.sum(correct_label_prob > 0.5)
-            self._votes[1] += np.sum(correct_label_prob < 0.5)
-            self._votes_80p[0] += np.sum(correct_label_prob > 0.8)
-            self._votes_80p[1] += np.sum(correct_label_prob < 0.2)
-            self._votes_90p[0] += np.sum(correct_label_prob > 0.9)
-            self._votes_90p[1] += np.sum(correct_label_prob < 0.1)
+            self._cnt_all += len(output)
+            self._log_loss_all += np.sum(losses)
+            self._acc_all += int(np.sum(accuracy))
+            self._cnt_end += 1
+            self._log_loss_end += losses[-1]
+            self._log_loss_end_last = losses[-1]
+            self._acc_end += int(accuracy[-1])
+            self._acc_end_last = int(accuracy[-1])
 
-            self._weights[0] += np.sum(correct_label_prob)
-            self._weights[1] += np.sum(bad_label_prob)
+            # g-good, a-all
+            self._log_prob_all_g += np.sum(log_weighted_prob_g)
+            self._log_prob_all_a += np.sum(log_weighted_prob)
 
-            self._log_weights[0] += np.sum(np.log(correct_label_prob))
-            self._log_weights[1] += np.sum(np.log(bad_label_prob))
+            self._log_prob_end_g += log_weighted_prob_g[-1]
+            self._log_prob_end_a += np.sum(log_weighted_prob[-1])
 
-            last_prob = correct_label_prob[-1]
-            self._last_correct = last_prob > 0.5
+        def stats(self):
+            res = {
+                'acc_end': self._acc_end,
+                'X_acc_end': self._acc_end_last,
+                'log_loss_end': self._log_loss_end,
+                'X_log_loss_end': self._log_loss_end_last,
+                'cnt_end': self._cnt_end,
 
-            losses = -np.log(correct_label_prob)
+                'acc_all': self._acc_all,
+                'log_loss_all': self._log_loss_all,
+                'cnt_all': self._cnt_all,
 
-            self._loss += np.sum(losses)
-            self._loss_2nd += np.sum(losses[-200:])
-            self._cnt += len(output)
-            self._cnt_2nd += 200
+                'X_acc_all_log_prob': 1. if self._log_prob_all_g > (
+                            self._log_prob_all_a - self._log_prob_all_g) else 0.,
+                'X_acc_ends_log_prob': 1. if self._log_prob_end_g > (
+                            self._log_prob_end_a - self._log_prob_end_g) else 0.,
 
-        def loss(self):
-            return self._loss / self._cnt
+                'X_acc_ends': 1. if self._acc_end > self._cnt_end // 2 else 0.,
+                'X_acc_all': 1. if self._acc_all > self._cnt_all // 2 else 0.
+            }
+            return res
 
-        def loss_2nd(self):
-            return self._loss_2nd / self._cnt_2nd
+        @staticmethod
+        def average_stats(stats):
+            res = {}
 
-        def majority_accuracy(self):
-            return self._votes[0] > self._votes[1]
+            example_cnt = len(stats)
+            cnt_all = sum(s['cnt_all'] for s in stats)
+            cnt_end = sum(s['cnt_end'] for s in stats)
 
-        def weighted_accuracy(self):
-            return self._weights[0] > self._weights[1]
+            res['example_cnt'] = int(example_cnt)
+            res['cnt_all'] = int(cnt_all)
+            res['cnt_end'] = int(cnt_end)
 
-        def log_weighted_accuracy(self):
-            return self._log_weights[0] > self._log_weights[1]
+            for key in stats[0].keys():
+                if 'cnt' in key:
+                    continue
+                elif 'X' in key:
+                    res[key] = sum(s[key] for s in stats) / example_cnt
+                elif 'end' in key:
+                    res[key] = sum(s[key] for s in stats) / cnt_end
+                elif 'all' in key:
+                    res[key] = sum(s[key] for s in stats) / cnt_all
+                else:
+                    raise NotImplementedError('Can not average over %s key ' % key)
+            return res
 
-        def last_accuracy(self):
-            return self._last_correct
+    def __init__(self, possible_labels):
+        self.possible_labels = possible_labels
+        self.examples = {}
+        self.loss = 0
+        self.loss_cnt = 0
 
-        def accuracy_80p(self):
-            return self._votes_80p[0] > self._votes_80p[1]
-
-        def accuracy_90p(self):
-            return self._votes_90p[0] > self._votes_90p[1]
-
-    def __init__(self):
-        self.results = {}
-        self.loss = []
-        self.examples = 0
+        self.recent_loss_array = [0] * 100
+        self.recent_loss_bs_array = [0] * 100
+        self.recent_loss_index = 0
 
     def append_results(self, ids, output, labels, loss, batch_size):
-        self.loss.append(loss*batch_size)
-        self.examples += batch_size
+        self.loss += loss * batch_size
+        self.loss_cnt += batch_size
+
+        self.recent_loss_array[self.recent_loss_index] = loss * batch_size
+        self.recent_loss_bs_array[self.recent_loss_index] = batch_size
+        self.recent_loss_index = (self.recent_loss_index + 1) % 100
 
         assert len(ids) == len(output)
         assert len(ids) == len(labels)
 
         for example_id, o, l in zip(ids, output, labels):
-            if example_id not in self.results:
-                self.results[example_id] = ClassificationMetrics.ExampleStatistics(example_id)
-            self.results[example_id].append(o, l)
+            if example_id not in self.examples:
+                self.examples[example_id] = ClassificationMetrics.ExampleStatistics(example_id, self.possible_labels)
+            self.examples[example_id].append(o, l)
 
     def get_summarized_results(self):
-        output = {}
+        stats = [v.stats() for (k, v) in self.examples.items()]
+        res = self.ExampleStatistics.average_stats(stats)
 
-        losses = []
-        losses_2nd = []
-        majority_accuracy = []
-        weighted_accuracy = []
-        log_weighted_accuracy = []
-        last_accuracy = []
-        accuracy_80p = []
-        accuracy_90p = []
+        res['loss'] = self.loss/self.loss_cnt
+        res['recent_loss'] = sum(self.recent_loss_array) / sum(self.recent_loss_bs_array)
 
-        for i, example_statistics in self.results.items():
-            losses.append(example_statistics.loss())
-            losses_2nd.append(example_statistics.loss_2nd())
-            majority_accuracy.append(example_statistics.majority_accuracy())
-            weighted_accuracy.append(example_statistics.weighted_accuracy())
-            log_weighted_accuracy.append(example_statistics.log_weighted_accuracy())
-            last_accuracy.append(example_statistics.last_accuracy())
-            accuracy_80p.append(example_statistics.accuracy_80p())
-            accuracy_90p.append(example_statistics.accuracy_90p())
-        output['loss'] = np.mean(losses)
-        output['loss_2nd'] = np.mean(losses_2nd)
-        output['majority_accuracy'] = np.sum(majority_accuracy) / len(majority_accuracy)
-        output['weighted_accuracy'] = np.sum(weighted_accuracy) / len(weighted_accuracy)
-        output['log_weighted_accuracy'] = np.sum(log_weighted_accuracy) / len(log_weighted_accuracy)
-        output['last_accuracy'] = np.sum(last_accuracy) / len(last_accuracy)
-        output['80p_accuracy'] = np.sum(accuracy_80p) / len(accuracy_80p)
-        output['90p_accuracy'] = np.sum(accuracy_90p) / len(accuracy_90p)
+        return res
 
-        print('Loss original: %g' % (sum(self.loss)/self.examples))
-        print('Number of examples (subsequences): %g' % self.examples)
+    def get_current_loss(self):
+        return sum(self.recent_loss_array)/sum(self.recent_loss_bs_array)
 
-        return output
+    def save(self, path):
+        os.makedirs(path)
 
-    def save_detailed_output(self, path):
-        res = self.get_summarized_results()
+        summarized_res = self.get_summarized_results()
 
-        res['detailed_res'] = {}
-        detailed_res = res['detailed_res']
-        for id, r in self.results.items():
-            detailed_res[id] = {}
-            r_dict = detailed_res[id]
-            print('For id %s' % id)
+        detailed_res = {}
+        for example_id, example in self.examples.items():
+            detailed_res[example_id] = example.stats()
 
-            v_corr = r._votes[0]
-            v_incorr = r._votes[1]
-            print('Log weights %s' % v_corr)
-            print('Log weights %s' % v_incorr)
+        with open(os.path.join(path, 'summarized_results.json'), 'w') as f:
+            json.dump(summarized_res, f, sort_keys=True, indent=2)
 
-            print(v_corr / (v_corr + v_incorr))
-            r_dict['prob_of_correct'] = v_corr / (v_corr + v_incorr)
-
-        save_dict(res, path)
+        with open(os.path.join(path, 'detailed_results.json'), 'w') as f:
+            json.dump(detailed_res, f, sort_keys=True, indent=2)
 
 
+# TODO Write Regression Metrics
 class RegressionMetrics:
     class ExampleStatistics:
         def __init__(self, example_id):
@@ -182,97 +196,48 @@ class RegressionMetrics:
             return loss, correlations
 
     def __init__(self):
-        self.results = {}
-        self.loss = []
-        self.examples = 0
-
-    def append_results(self, ids, output, labels, loss, batch_size):
-        self.loss.append(loss*batch_size)
-        self.examples += batch_size
-
-        assert len(ids) == len(output)
-        assert len(ids) == len(labels)
-
-        for example_id, o, l in zip(ids, output, labels):
-            if example_id not in self.results:
-                self.results[example_id] = RegressionMetrics.ExampleStatistics(example_id)
-            self.results[example_id].append(o, l)
-
-    def get_summarized_results(self):
-
-        output = {}
-
-        for i, r in self.results.items():
-            print(r.stats())
-            break
-            #stats = self.results
-
-
-
-
-        #
-        #losses = []
-        # losses_2nd = []
-        # majority_accuracy = []
-        # weighted_accuracy = []
-        # log_weighted_accuracy = []
-        # last_accuracy = []
-        # accuracy_80p = []
-        # accuracy_90p = []
-        #
-        # for i, example_statistics in self.results.items():
-        #     losses.append(example_statistics.loss())
-        #     losses_2nd.append(example_statistics.loss_2nd())
-        #     majority_accuracy.append(example_statistics.majority_accuracy())
-        #     weighted_accuracy.append(example_statistics.weighted_accuracy())
-        #     log_weighted_accuracy.append(example_statistics.log_weighted_accuracy())
-        #     last_accuracy.append(example_statistics.last_accuracy())
-        #     accuracy_80p.append(example_statistics.accuracy_80p())
-        #     accuracy_90p.append(example_statistics.accuracy_90p())
-        #output['loss'] = np.mean(losses)
-        # output['loss_2nd'] = np.mean(losses_2nd)
-        # output['majority_accuracy'] = np.sum(majority_accuracy) / len(majority_accuracy)
-        # output['weighted_accuracy'] = np.sum(weighted_accuracy) / len(weighted_accuracy)
-        # output['log_weighted_accuracy'] = np.sum(log_weighted_accuracy) / len(log_weighted_accuracy)
-        # output['last_accuracy'] = np.sum(last_accuracy) / len(last_accuracy)
-        # output['80p_accuracy'] = np.sum(accuracy_80p) / len(accuracy_80p)
-        # output['90p_accuracy'] = np.sum(accuracy_90p) / len(accuracy_90p)
-        output['loss'] = (sum(self.loss)/self.examples)
-        # eprint('Loss original: %g' % )
-        # print('Number of examples (subsequences): %g' % self.examples)
-        #
-        return output
-
-    def save_detailed_output(self, path):
-        pass
-        # res = self.get_summarized_results()
-        #
-        # res['detailed_res'] = {}
-        # detailed_res = res['detailed_res']
-        # for id, r in self.results.items():
-        #     detailed_res[id] = {}
-        #     r_dict = detailed_res[id]
-        #     print('For id %s' % id)
-        #
-        #     v_corr = r._votes[0]
-        #     v_incorr = r._votes[1]
-        #     print('Log weights %s' % v_corr)
-        #     print('Log weights %s' % v_incorr)
-        #
-        #     print(v_corr / (v_corr + v_incorr))
-        #     r_dict['prob_of_correct'] = v_corr / (v_corr + v_incorr)
-        #
-        # save_dict(res, path)
+        raise NotImplementedError('Regression metrics currently not implemented')
+        # self.results = {}
+        # self.loss = []
+        # self.examples = 0
+    #
+    # def append_results(self, ids, output, labels, loss, batch_size):
+    #     self.loss.append(loss*batch_size)
+    #     self.examples += batch_size
+    #
+    #     assert len(ids) == len(output)
+    #     assert len(ids) == len(labels)
+    #
+    #     for example_id, o, l in zip(ids, output, labels):
+    #         if example_id not in self.results:
+    #             self.results[example_id] = RegressionMetrics.ExampleStatistics(example_id)
+    #         self.results[example_id].append(o, l)
+    #
+    # def get_summarized_results(self):
+    #
+    #     output = {}
+    #
+    #     for i, r in self.results.items():
+    #         print(r.stats())
+    #         break
+    #         #stats = self.results
 
 
-def create_metrics(objective_type):
+def create_metrics(objective_type, output_size):
     if 'CrossEntropy' in objective_type:
-        return ClassificationMetrics()
+        return ClassificationMetrics(output_size)
     elif 'MeanSquaredError' in objective_type or 'L1Loss' in objective_type:
         return RegressionMetrics()
     else:
         raise NotImplementedError('In create_metrics(...) objective_type=%s is not implemented' % objective_type)
 
+
+def average_metrics_results(results):
+    res = {}
+    for key in results[0]:
+        res[key] = sum(r[key] for r in results)/len(results)
+
+    return res
 
 if __name__ == "__main__":
     outputs = np.array([[[15, 15], [10, 11]],

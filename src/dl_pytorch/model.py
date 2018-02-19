@@ -5,23 +5,30 @@ import numpy as np
 from src.dl_core.model import ModelBase
 import logging
 from src.dl_pytorch.utils import SeparateChannelCNN, AllChannelsCNN, RNN
+from torchviz import make_dot
 
 
 logger = logging.getLogger(__name__)
 
 
 class PytorchModelBase(nn.Module, ModelBase):
-    def __init__(self, batch_norm, skip_connections):
+    Skip_None = 'none'
+    Skip_Add = 'add'
+    Skip_Concat = 'concat'
+
+    def __init__(self, batch_norm, skip_mode, **kwargs):
         super().__init__()
         self.batch_norm = batch_norm
-        self.skip_connections = skip_connections
+        self.skip_mode = skip_mode
 
     @staticmethod
     def add_arguments(parser):
         parser.add_argument("--batch_norm", dest="batch_norm", type=int, default=0, choices=[0, 1],
                             help="Whether to use batch norm or not", )
-        parser.add_argument("--skip_connections", dest="skip_connections", type=int, default=0, choices=[0, 1],
+        parser.add_argument("--skip_mode", dest="skip_mode", type=str, default='none',
+                            choices=['none', 'add', 'concat'],
                             help="Whether to skip connections", )
+        return parser
 
     def save_model(self, path):
         torch.save(self.state_dict(), path)
@@ -59,6 +66,7 @@ class RnnBase(PytorchModelBase):
                             help="RNN cell type.")
         parser.add_argument("--use_context", dest="use_context", type=int, choices=[0, 1], default=0,
                             help="If 1 then context information will be used.")
+        return parser
 
     def __init__(self, input_size, rnn_hidden_size, rnn_num_layers, output_size, dropout,
                  rnn_cell_type, use_context, context_size, **kwargs):
@@ -105,7 +113,6 @@ class RnnBase(PytorchModelBase):
 
             states_0, states_1 = Variable(torch.from_numpy(states_0), requires_grad=False),\
                                  Variable(torch.from_numpy(states_1), requires_grad=False)
-
             return states_0, states_1
 
         elif self.rnn_cell_type == "GRU":
@@ -125,7 +132,7 @@ class SimpleRNN(RnnBase):
 
         cell = RnnBase.cell_mapper[self.rnn_cell_type]
         self.rnn = RNN(cell=cell, in_size=input_size, hidden_size=self.rnn_hidden_size, num_layers=self.rnn_num_layers,
-                       dropout=self.dropout, batch_norm=self.batch_norm)
+                       dropout=self.dropout, batch_norm=self.batch_norm, skip_mode=self.skip_mode)
 
         # self.dropout_layer = nn.Dropout(p=self.dropout)
 
@@ -146,6 +153,15 @@ class SimpleRNN(RnnBase):
 
     def offset_size(self, sequence_size):
         return 0
+
+    # def draw(self):
+    #     x = Variable(torch.from_numpy(np.random.uniform(size=[64, 1, self.input_size]).astype(np.float32)))
+    #     y, h = self(x, None, None)
+    #     print('Make dot')
+    #     dot = make_dot(y, params=dict(self.named_parameters()))
+    #     print('Start render')
+    #     dot.render('model.gv', view=False)
+    #     print('Render done')
 
 
 class ConvRNN(RnnBase):
@@ -171,6 +187,7 @@ class ConvRNN(RnnBase):
                             help="Width in time dimension of the kernels in the second cnn block.")
         parser.add_argument("--cnn_f_stride", dest="cnn_f_stride", type=int, default=2,
                             help="Stride for the second CNN block.")
+        return parser
 
     def __init__(self, cnn_c_layers, cnn_c_channels, cnn_c_width, cnn_c_stride,
                  cnn_f_layers, cnn_f_channels, cnn_f_width, cnn_f_stride, **kwargs):
@@ -208,6 +225,50 @@ class ConvRNN(RnnBase):
         out_seq_size = self.cnn_c.out_seq_size(sequence_size)
         out_seq_size = self.cnn_f.out_seq_size(out_seq_size)
         return sequence_size - out_seq_size
+
+
+class ChronoNet(RnnBase):
+    class InceptionBlock(nn.Module):
+        def __init__(self, in_size, out_size=32):
+            super().__init__()
+            self.conv_1 = nn.Conv1d(in_channels=in_size, out_channels=out_size, kernel_size=2, stride=2, padding=0)
+            self.conv_2 = nn.Conv1d(in_channels=in_size, out_channels=out_size, kernel_size=4, stride=2, padding=1)
+            self.conv_3 = nn.Conv1d(in_channels=in_size, out_channels=out_size, kernel_size=8, stride=2, padding=3)
+
+        def forward(self, x):
+            # Transpose to  N x C x L
+            x = torch.transpose(x, 1, 2)
+            x = torch.cat([self.conv_1(x), self.conv_2(x), self.conv_3(x)], dim=1)
+            # Transpose back to N x L x C
+            x = torch.transpose(x, 1, 2)
+            return x
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.inception_block_1 = ChronoNet.InceptionBlock(self.input_size, out_size=32)
+        self.inception_block_2 = ChronoNet.InceptionBlock(32*3, out_size=32)
+        self.inception_block_3 = ChronoNet.InceptionBlock(32*3, out_size=32)
+
+        cell = RnnBase.cell_mapper[self.rnn_cell_type]
+        self.rnn = RNN(cell=cell, in_size=32*3, hidden_size=self.rnn_hidden_size,
+                       num_layers=self.rnn_num_layers, dropout=self.dropout, batch_norm=self.batch_norm,
+                       skip_mode=self.skip_mode)
+
+        self.fc = nn.Linear(in_features=self.rnn_hidden_size, out_features=self.output_size, bias=True)
+
+    def forward(self, x, hidden, context):
+        x = self.inception_block_1(x)
+        x = self.inception_block_2(x)
+        x = self.inception_block_3(x)
+
+        x, hidden = self.rnn(x, hidden)
+        x = self.fc(x)
+
+        return x, hidden
+
+    def offset_size(self, sequence_size):
+        assert sequence_size % 8 == 0,  "For this model it is better if sequence size is divisible by 8"
+        return sequence_size - sequence_size//8
 
 
 # class BNLSTM(SimpleRNN):

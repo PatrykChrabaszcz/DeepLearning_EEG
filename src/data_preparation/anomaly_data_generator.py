@@ -7,6 +7,8 @@ import re
 import os
 import mne
 import click
+import json
+
 
 log = logging.getLogger()
 
@@ -100,7 +102,7 @@ class DataGenerator:
             # TODO: We would like to read some more information from the description files
             # txt_file_path = file_path[:-8] + '.txt'
 
-    def __init__(self, data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value,
+    def __init__(self, data_path, cache_path, secs_to_cut, sampling_freq, duration_mins, max_abs_value,
                  version='v1.1.2'):
         """
         :param data_path:
@@ -116,8 +118,12 @@ class DataGenerator:
 
         self.secs_to_cut_at_start_end = secs_to_cut
         self.sampling_freq = sampling_freq
-        self.duration_recording_mins = duration_min
+        self.duration_mins = duration_mins
         self.max_abs_value = max_abs_value
+
+        os.makedirs(self.cache_path)
+        with open(os.path.join(self.cache_path, 'data_generator_info.json'), 'w') as f:
+            json.dump(vars(self), f)
 
     @staticmethod
     def read_all_file_names(path, extension='.edf', key=Key.time_key):
@@ -191,14 +197,18 @@ class DataGenerator:
     def default_preprocessing_functions(self):
         preprocessing_functions = []
 
-        preprocessing_functions.append(lambda data, fs: (data[:, int(self.secs_to_cut_at_start_end * fs):-int(
-            self.secs_to_cut_at_start_end * fs)], fs))
+        if self.secs_to_cut_at_start_end > 0:
+            preprocessing_functions.append(lambda data, fs: (data[:, int(self.secs_to_cut_at_start_end * fs):-int(
+                self.secs_to_cut_at_start_end * fs)], fs))
 
-        #preprocessing_functions.append(lambda data, fs: (data[:, :int(self.duration_recording_mins * 60 * fs)], fs))
+        if self.duration_mins > 0:
+            preprocessing_functions.append(lambda data, fs: (data[:, :int(self.duration_mins * 60 * fs)], fs))
 
         preprocessing_functions.append(lambda data, fs: (resampy.resample(data, fs, self.sampling_freq, axis=1,
                                                                           filter='kaiser_fast'), self.sampling_freq))
-        #preprocessing_functions.append(lambda data, fs: (np.clip(data, -self.max_abs_value, self.max_abs_value), fs))
+        if self.max_abs_value > 0:
+            preprocessing_functions.append(lambda data, fs: (
+                np.clip(data, -self.max_abs_value, self.max_abs_value), fs))
 
         return preprocessing_functions
 
@@ -253,8 +263,8 @@ class DataGenerator:
 @click.option('--cache_path', type=click.Path(), required=True)
 @click.option('--secs_to_cut', default=120, help='How many seconds are removed from the beginning and end of recording.')
 @click.option('--sampling_freq', default=100.0, help='Signal will be preprocessed to the desired frequency.')
-@click.option('--duration_min', default=5, help='Duration of the recording.')
-@click.option('--max_abs_value', default=0.0008, help='Clip if channel value is grater than max_abs_value')
+@click.option('--duration_min', default=0, help='Duration of the recording.')
+@click.option('--max_abs_value', default=800, help='Clip if channel value is grater than max_abs_value')
 def main(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value):
     print('Settings:')
     print('Data path: %s' % data_path)

@@ -10,7 +10,7 @@ import json
 def setup_logging(level=logging.INFO):
     root = logging.getLogger()
     root.setLevel(level)
-    format = '%(asctime)s, %(process)-6s %(levelname)-8s: %(message)s'
+    format = '%(asctime)s, %(process)-6s %(levelname)-5s %(module)s: %(message)s'
     date_format = '%H:%M:%S'
     if 'colorlog' in sys.modules and os.isatty(2):
         cformat = '%(log_color)s' + format

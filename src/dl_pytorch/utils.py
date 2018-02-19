@@ -1,4 +1,4 @@
-from torch import nn, cat, unsqueeze, transpose
+from torch import nn, cat, unsqueeze, transpose, cat
 from collections import OrderedDict
 
 
@@ -104,13 +104,30 @@ class AllChannelsCNN(nn.Module):
         return seq_size
 
 
+# In a full setting (when everything is used)
+# A = Input
+# B = RNN Layer(A)
+# C = Batch Norm(B)
+# D = Residual(C, A)
+# E = Dropout(D)
+# F = RNN Layer (E)
+# G = Batch Norm(F)
+# H = Residual (G, D) <- Note that we use D not E
+# I = Dropout(H)
 class RNN(nn.Module):
-    def __init__(self, cell, in_size, hidden_size, num_layers, dropout, batch_norm=True):
+    def __init__(self, cell, in_size, hidden_size, num_layers, dropout=0.0, batch_norm=True, skip_mode='none'):
         super().__init__()
+
+        self.skip_mode = skip_mode
 
         self.rnns = []
         self.batch_norm = batch_norm
         self.bnns = []
+
+        # If skip mode is 'add' and input size is different than hidden size then we will need additional conv layer to
+        # match dimensions
+        self.skip_layer = nn.Conv1d(in_channels=in_size, out_channels=hidden_size, kernel_size=1, stride=1) \
+            if in_size != hidden_size and skip_mode == 'add' else None
 
         # Note that this is not optimal for standard LSTM,GRU and num_layers > 1
         # But we do not want to mess up with 1000 different implementations so we provide one that can handle
@@ -119,20 +136,33 @@ class RNN(nn.Module):
             rnn = cell(input_size=in_size, hidden_size=hidden_size, num_layers=1, batch_first=True)
             self.add_module('rnn_%s' % i, rnn)
             self.rnns.append(rnn)
-            in_size = hidden_size
+            in_size = hidden_size if skip_mode != 'concat' else hidden_size + in_size
             if batch_norm:
                 bnn = nn.BatchNorm1d(num_features=hidden_size)
                 self.add_module('bnn_c_%s' % i, bnn)
                 self.bnns.append(bnn)
 
+        self.dropout_layer = nn.Dropout(p=dropout) if dropout > 0.0 else None
+
     def forward(self, x, h):
         h_last = []
-        for i, rnn in enumerate(self.rnns):
 
+        if self.skip_layer:
+            # Transpose to  N x C x L
+            x_skip = transpose(x, 1, 2).contiguous()
+            x_skip = self.skip_layer(x_skip)
+            # Transpose back to N x L x C
+            x_skip = transpose(x_skip, 1, 2)
+        else:
+            x_skip = x
+
+        for i, rnn in enumerate(self.rnns):
             if isinstance(h, tuple):
                 h_curr = (h_[i].unsqueeze(0) for h_ in h)
-            else:
+            elif h is not None:
                 h_curr = h[i].unsqueeze(0)
+            else:
+                h_curr = h
             x, h_layer = rnn(x, h_curr)
 
             if self.batch_norm:
@@ -143,6 +173,17 @@ class RNN(nn.Module):
                 x = transpose(x, 1, 2)
 
             h_last.append(h_layer)
+
+            if self.skip_mode == 'add' and i != len(self.rnns) - 1:
+                x += x_skip
+                x_skip = x
+
+            elif self.skip_mode == 'concat' and i != len(self.rnns) - 1:
+                x = cat([x, x_skip], dim=2)
+                x_skip = x
+
+            if self.dropout_layer:
+                x = self.dropout_layer(x)
 
         return x, cat(h_last)
 

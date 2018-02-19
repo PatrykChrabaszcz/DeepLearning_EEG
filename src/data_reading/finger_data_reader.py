@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 class FingerDataReader(SequenceDataReader):
     class ExampleInfo(SequenceDataReader.SequenceExampleInfo):
         def __init__(self, example_id, data_ctypes, data_shape, labels_ctypes, labels_shape,
-                     offset_size=0, limit_duration=None):
-            super().__init__(example_id=example_id, offset_size=offset_size)
+                     offset_size=0, random_mode=0, limit_duration=None):
+            super().__init__(example_id=example_id, offset_size=offset_size, random_mode=random_mode)
 
             self.data = np.frombuffer(data_ctypes, dtype=np.float32, count=int(np.prod(data_shape)))
             self.data.shape = data_shape
@@ -41,8 +41,8 @@ class FingerDataReader(SequenceDataReader):
 
         # We need to overwrite this method, all examples read from the same array, we need to read from a
         # completely different points within the sequence
-        def reset(self, sequence_size, randomize=False, new_epoch=False):
-            super().reset(sequence_size, randomize, new_epoch)
+        def reset(self, sequence_size, randomize=False):
+            super().reset(sequence_size, randomize)
 
             # Additional behaviour (overwrite the self.curr_index with random point in the file (not just a phase)
             if randomize and not self.done:
@@ -56,6 +56,7 @@ class FingerDataReader(SequenceDataReader):
                             help="Number of the patient.")
         parser.add_argument('--fingers', nargs='+', required=True, default=[0, 1, 2, 4], type=int,
                             help="Which fingers will be used")
+        return parser
 
     def _initialize(self, subject, fingers, **kwargs):
         self.subject = subject
@@ -112,7 +113,8 @@ class FingerDataReader(SequenceDataReader):
         # mini-batch
         number_of_examples = 128 if self.data_type == SequenceDataReader.Train_Data else 1
         self.examples.append([FingerDataReader.ExampleInfo(i, self.data_ctypes, data_shape, self.labels_ctypes,
-                                                           labels_shape, offset_size=self.offset_size)
+                                                           labels_shape, offset_size=self.offset_size,
+                                                           random_mode=self.random_mode)
                               for i in range(number_of_examples)])
 
         # Additional data structure for faster access

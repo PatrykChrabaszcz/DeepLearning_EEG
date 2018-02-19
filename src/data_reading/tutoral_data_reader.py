@@ -36,11 +36,11 @@ class FingerDataReader(SequenceDataReader):
 
         # We need to overwrite this method, all examples read from the same array, we need to read from a
         # completely different points within the sequence
-        def reset(self, sequence_size, randomize=False, new_epoch=False):
-            super().reset(sequence_size, randomize, new_epoch)
+        def reset(self, sequence_size):
+            super().reset(sequence_size)
 
             # Additional behaviour (overwrite the self.curr_index with random point in the file (not just a phase)
-            if randomize and not self.done:
+            if self.random_mode == 1 and not self.done:
                 margin = self.get_length() - self.sequence_size
                 self.curr_index = random.randint(0, margin)
 
@@ -51,6 +51,7 @@ class FingerDataReader(SequenceDataReader):
                             help="Number of the patient.")
         parser.add_argument('--fingers', nargs='+', required=True, default=[0, 1, 2, 4], type=int,
                             help="Which fingers will be used")
+        return parser
 
     def _initialize(self, subject, fingers, **kwargs):
         self.subject = subject
