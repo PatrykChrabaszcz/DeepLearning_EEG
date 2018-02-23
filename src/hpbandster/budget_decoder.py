@@ -2,7 +2,7 @@ from copy import deepcopy
 
 
 class BudgetDecoderBase:
-    def __init__(self):
+    def __init__(self, **kwargs):
         pass
 
     def adjusted_arguments(self, arguments, budget):
@@ -10,8 +10,8 @@ class BudgetDecoderBase:
 
 
 class SimpleBudgetDecoder(BudgetDecoderBase):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     def adjusted_arguments(self, arguments, budget):
         budget = int(budget)

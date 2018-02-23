@@ -27,6 +27,7 @@ class SequenceDataReader:
     Train_Data = 'train'
     Validation_Data = 'validation'
     Test_Data = 'test'
+    DataTypes = [Train_Data, Validation_Data, Test_Data]
 
     # This class is used to hold information about examples
     class SequenceExampleInfo:
@@ -64,6 +65,7 @@ class SequenceDataReader:
 
             # If sample is smaller than sequence size then we simply will ignore it
             margin = self.get_length() - self.sequence_size
+
             if margin < 0:
                 self.done = True
                 return
@@ -155,8 +157,10 @@ class SequenceDataReader:
                  allow_smaller_batch,
                  **kwargs):
 
+        assert data_type in self.DataTypes, 'Can not interpret %s as data_type' % data_type
+
         if data_type == self.Validation_Data or data_type == self.Test_Data:
-            logger.warning('For validation pass we disable: balanced, random_mode, continuous, forget_state')
+            logger.warning('For %s pass we disable: balanced, random_mode, continuous, forget_state' % data_type)
             balanced = False
             random_mode = 0
             continuous = 0
@@ -229,7 +233,7 @@ class SequenceDataReader:
     def stop_readers(self):
         logger.info('Trying to stop %s readers ...' % self.data_type)
 
-        # There is nothing adding elements to the info_queue
+        # There is nothing that adds elements to the info_queue at this point
         # Only readers will try to get elements from this queue.
         while self.info_queue.qsize() > 0:
             try:
@@ -340,7 +344,7 @@ class SequenceDataReader:
                 self.info_queue.put(example.get_info_and_advance())
 
     def initialize_epoch(self, sequence_size=None):
-        if self.data_type is not self.Train_Data and self.random_mode:
+        if (self.data_type != self.Train_Data) and self.random_mode:
             logger.warning('Are you sure you want to set random_mode in {1, 2} for non training data?')
 
         if self.continuous and self.epoch_initialized:

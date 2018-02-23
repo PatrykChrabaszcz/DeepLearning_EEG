@@ -46,9 +46,11 @@ class ModelTrainer(ModelTrainerBase):
             raise NotImplementedError('This optimizer is not implemented')
 
         if self.cosine_restarts_decay:
+            if self.budget_type != 'iteration':
+                raise RuntimeError('Cosine decay not implemented (yet) for time or epoch budget.')
             logger.info('Will use cosine restarts decay')
-            self.scheduler = CosineRestartsScheduler(self.optimizer, first_decay_steps=1000,
-                                                     t_mul=3.0, m_mul=1.0, alpha=0.0)
+            self.scheduler = CosineRestartsScheduler(self.optimizer, first_decay_steps=self.budget,
+                                                     t_mul=1.0, m_mul=1.0, alpha=0.0)
             self.optimizer = ScheduledOptimizer(self.scheduler, self.optimizer,
                                                 decay_wd=decay_wd, normalize_wd=decay_wd)
 

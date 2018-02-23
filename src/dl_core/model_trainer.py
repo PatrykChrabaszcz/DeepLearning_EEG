@@ -92,7 +92,9 @@ class ModelTrainerBase:
         process_metrics_stats = time_stats.create_child_stats('Process Metrics')
         save_states_stats = time_stats.create_child_stats('Save States')
 
-        metrics = create_metrics(objective_type=self.objective_type, output_size=data_reader.output_size())
+        metrics = create_metrics(name=data_reader.data_type,
+                                 objective_type=self.objective_type,
+                                 output_size=data_reader.output_size())
 
         stop_run = ModelTrainerBase.StopRun(self.budget_type, self.budget, train=train)
 

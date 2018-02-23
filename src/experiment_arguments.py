@@ -1,8 +1,10 @@
-from argparse import ArgumentParser
-from configparser import ConfigParser
 from ConfigSpace.read_and_write.pcs_new import read as read_pcs
-import logging
+from configparser import ConfigParser
+from argparse import ArgumentParser
 from copy import deepcopy
+import logging
+import json
+import os
 
 # Initialize logging
 logger = logging.getLogger(__name__)
@@ -23,13 +25,18 @@ class ExperimentArguments(object):
         :param use_all_cli_args: If true then will assert that all CLI arguments were processed successfully.
         """
         self._use_all_cli_args = use_all_cli_args
-        self._parser = ArgumentParser()
+        self._parser = ArgumentParser(allow_abbrev=False)
         self._arguments = None
 
-        self._ini_file_parser = ArgumentParser()
+        self._ini_conf = None
+        self._ini_file_parser = ArgumentParser(allow_abbrev=False)
         self._ini_file_parser.add_argument("--ini_file", type=str, default="",
                                            help="Path to the file with default values "
                                                 "for script parameters (.ini format).")
+
+    def save_to_file(self, file_path):
+        with open(file_path, 'w') as config_file:
+            self._ini_conf.write(config_file)
 
     @staticmethod
     def read_configuration_space(file_path):
@@ -83,20 +90,20 @@ class ExperimentArguments(object):
 
         if args.ini_file != "":
             logger.debug('Updating default parameter values from file: %s' % args.ini_file)
-            ini_conf = ConfigParser()
-            ini_conf.read(args.ini_file)
+            self._ini_conf = ConfigParser()
+            self._ini_conf.read(args.ini_file)
 
             # Tell me if there is a better way to assert that .ini arguments are already in the parser
             args = self._parser.parse_known_args(unknown_args)[0]
 
-            sections = sections if sections is not None else ini_conf.sections()
+            sections = sections if sections is not None else self._ini_conf.sections()
             exclude_sections = exclude_sections if exclude_sections is not None else []
             for section in sections:
                 if section in exclude_sections:
                     continue
 
                 # Replace script defaults with defaults from the ini file
-                ini_args_dict = dict(ini_conf.items(section))
+                ini_args_dict = dict(self._ini_conf.items(section))
                 for key in ini_args_dict:
                     if key not in vars(args).keys():
                         raise RuntimeError('Argument %s from .ini file not present in the script.' %
@@ -149,11 +156,21 @@ class ExperimentArguments(object):
         if key[0] == '_':
             super().__setattr__(key, value)
         else:
+            if key not in self._arguments.keys():
+                raise KeyError('ExperimentArguments does not support addition of new arguments during runtime. '
+                               '(Argument name: %s)' % key)
             self._arguments[key] = value
+
+            # Makes it possible to save again updated by CLI arguments .ini
+            # file and restore experiment
+            for section in self._ini_conf.sections():
+                if self._ini_conf.has_option(section, key):
+                    self._ini_conf.set(section, key, value)
+                    return
+            raise RuntimeError('Could not set field %s in the ConfigParser object' % key)
 
     def __getitem__(self, item):
         return self.__getattr__(item)
 
     def __setitem__(self, key, value):
         self.__setattr__(key, value)
-

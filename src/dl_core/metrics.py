@@ -113,8 +113,8 @@ class ClassificationMetrics:
                     raise NotImplementedError('Can not average over %s key ' % key)
             return res
 
-    def __init__(self, possible_labels):
-        self.possible_labels = possible_labels
+    def __init__(self, name, output_size):
+        self.output_size = output_size
         self.examples = {}
         self.loss = 0
         self.loss_cnt = 0
@@ -122,6 +122,8 @@ class ClassificationMetrics:
         self.recent_loss_array = [0] * 100
         self.recent_loss_bs_array = [0] * 100
         self.recent_loss_index = 0
+
+        self.name = name
 
     def append_results(self, ids, output, labels, loss, batch_size):
         self.loss += loss * batch_size
@@ -136,7 +138,7 @@ class ClassificationMetrics:
 
         for example_id, o, l in zip(ids, output, labels):
             if example_id not in self.examples:
-                self.examples[example_id] = ClassificationMetrics.ExampleStatistics(example_id, self.possible_labels)
+                self.examples[example_id] = ClassificationMetrics.ExampleStatistics(example_id, self.output_size)
             self.examples[example_id].append(o, l)
 
     def get_summarized_results(self):
@@ -151,8 +153,8 @@ class ClassificationMetrics:
     def get_current_loss(self):
         return sum(self.recent_loss_array)/sum(self.recent_loss_bs_array)
 
-    def save(self, path):
-        os.makedirs(path)
+    def save(self, directory):
+        os.makedirs(directory, exist_ok=True)
 
         summarized_res = self.get_summarized_results()
 
@@ -160,10 +162,10 @@ class ClassificationMetrics:
         for example_id, example in self.examples.items():
             detailed_res[example_id] = example.stats()
 
-        with open(os.path.join(path, 'summarized_results.json'), 'w') as f:
+        with open(os.path.join(directory, '%s_summarized_results.json' % self.name), 'w') as f:
             json.dump(summarized_res, f, sort_keys=True, indent=2)
 
-        with open(os.path.join(path, 'detailed_results.json'), 'w') as f:
+        with open(os.path.join(directory, '%s_detailed_results.json' % self.name), 'w') as f:
             json.dump(detailed_res, f, sort_keys=True, indent=2)
 
 
@@ -223,9 +225,9 @@ class RegressionMetrics:
     #         #stats = self.results
 
 
-def create_metrics(objective_type, output_size):
+def create_metrics(name, objective_type, output_size):
     if 'CrossEntropy' in objective_type:
-        return ClassificationMetrics(output_size)
+        return ClassificationMetrics(name, output_size)
     elif 'MeanSquaredError' in objective_type or 'L1Loss' in objective_type:
         return RegressionMetrics()
     else:

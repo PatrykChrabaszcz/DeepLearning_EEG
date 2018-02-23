@@ -234,11 +234,13 @@ class ChronoNet(RnnBase):
             self.conv_1 = nn.Conv1d(in_channels=in_size, out_channels=out_size, kernel_size=2, stride=2, padding=0)
             self.conv_2 = nn.Conv1d(in_channels=in_size, out_channels=out_size, kernel_size=4, stride=2, padding=1)
             self.conv_3 = nn.Conv1d(in_channels=in_size, out_channels=out_size, kernel_size=8, stride=2, padding=3)
+            self.non_linearity = nn.ReLU
 
         def forward(self, x):
             # Transpose to  N x C x L
             x = torch.transpose(x, 1, 2)
             x = torch.cat([self.conv_1(x), self.conv_2(x), self.conv_3(x)], dim=1)
+            x = self.non_linearity()(x)
             # Transpose back to N x L x C
             x = torch.transpose(x, 1, 2)
             return x

@@ -55,7 +55,6 @@ class AnomalyDataReader(SequenceDataReader):
             self.mean = np.array(info_dict['mean'], dtype=np.float32)
             self.std = np.array(info_dict['std'], dtype=np.float32)
 
-
             self.file_handler = mne.io.read_raw_fif(info_dict['data_file'], preload=False, verbose='error')
             self.length = self.file_handler.n_times
             self.length = self.length if limit_duration is None else min(self.length, limit_duration)

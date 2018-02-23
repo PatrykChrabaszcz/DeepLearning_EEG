@@ -1,5 +1,5 @@
 from hpbandster import HB_master
-from src.bayesian_opt.config_generator import ConfigGenerator
+from src.hpbandster.config_generator import ConfigGenerator
 from hpbandster.HB_iteration import SuccessiveHalving
 from hpbandster.distributed.utils import start_local_nameserver
 from hpbandster.HB_master import HpBandSter
@@ -88,23 +88,3 @@ class BayesianOptimizer(object):
 
     def shutdown(self):
         self.optimizer.shutdown()
-
-    @staticmethod
-    def find_name_server(working_dir, num_tries=60, interval=1):
-        conf_file = os.path.join(working_dir, 'pyro.conf')
-
-        user_notified = False
-        for i in range(num_tries):
-            try:
-                with open(conf_file, 'r') as f:
-                    d = json.load(f)
-                logger.debug('Found nameserver info %s' % d)
-                return d['ns_host'], d['ns_port']
-
-            except FileNotFoundError:
-                if not user_notified:
-                    logger.info('Config file not found. Waiting for the master node to start')
-                    user_notified = True
-                sleep(interval)
-
-        raise RuntimeError("Could not find the nameserver information after %d tries, aborting!" % num_tries)
