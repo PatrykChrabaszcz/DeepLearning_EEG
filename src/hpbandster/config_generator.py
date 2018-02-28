@@ -10,15 +10,16 @@ logger = logging.getLogger(__name__)
 class ConfigGenerator(BOHB):
     @staticmethod
     def add_arguments(parser):
-        parser.add_argument("--min_points_in_model", type=int, default=64,
+        parser.section('config_generator')
+        parser.add_argument("min_points_in_model", type=int, default=64,
                             help="HPBandSter minimum number of points in the model.")
-        parser.add_argument("--top_n_percent", type=int, default=15,
+        parser.add_argument("top_n_percent", type=int, default=15,
                             help="HPBandSter parameter.")
-        parser.add_argument("--num_samples", type=int, default=81,
+        parser.add_argument("num_samples", type=int, default=81,
                             help="HPBandSter parameter.")
-        parser.add_argument("--random_fraction", type=float, default=1./3,
+        parser.add_argument("random_fraction", type=float, default=1./3,
                             help="HPBandSter parameter.")
-        parser.add_argument("--bandwidth_factor", type=int, default=3,
+        parser.add_argument("bandwidth_factor", type=int, default=3,
                             help="HPBandSter parameter.")
         return parser
 

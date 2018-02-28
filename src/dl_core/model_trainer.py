@@ -62,25 +62,26 @@ class ModelTrainerBase:
 
     @staticmethod
     def add_arguments(parser):
-        parser.add_argument("--lr", type=float, default=0.001,
+        parser.section('model_trainer')
+        parser.add_argument("lr", type=float, default=0.001,
                             help="Learning rate used for training.")
-        parser.add_argument("--l2_decay", type=float, default=0.0,
+        parser.add_argument("l2_decay", type=float, default=0.0,
                             help="L2 regularization coefficient.")
-        parser.add_argument("--objective_type", type=str,
+        parser.add_argument("objective_type", type=str,
                             choices=ModelTrainerBase.objective_types,
                             default='CrossEntropy_last',
                             help="Whether loss is propagated from all timestamps or just from the last one.")
 
-        parser.add_argument("--budget", type=int, default=1,
+        parser.add_argument("budget", type=int, default=1,
                             help="Training budget")
-        parser.add_argument("--budget_type", type=str, default='epoch',
+        parser.add_argument("budget_type", type=str, default='epoch',
                             choices=ModelTrainerBase.budget_types,
                             help="Type of the training budget.")
 
-        parser.add_argument("--optimizer", type=str, choices=['Adam', 'AdamW', 'SGD'],
+        parser.add_argument("optimizer", type=str, choices=['Adam', 'AdamW', 'SGD'],
                             default='AdamW',
                             help="Optimizer that is used to update the weights.")
-        parser.add_argument("--cosine_restarts_decay", type=int, choices=[0, 1],
+        parser.add_argument("cosine_restarts_decay", type=int, choices=[0, 1],
                             default=0,
                             help="If set to 1 then will use cosine decay learning rate schedule with restarts.")
         return parser

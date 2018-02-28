@@ -57,7 +57,7 @@ class ModelTrainer(ModelTrainerBase):
     @staticmethod
     def add_arguments(parser):
         ModelTrainerBase.add_arguments(parser)
-        parser.add_argument("--cuda", dest="cuda", type=int, default=1, choices=[0, 1],
+        parser.add_argument("cuda", dest="cuda", type=int, default=1, choices=[0, 1],
                             help="Use cuda implementation")
 
         return parser

@@ -17,21 +17,22 @@ class BayesianOptimizer(object):
 
     @staticmethod
     def add_arguments(parser):
-        parser.add_argument("--working_dir", type=str, default='',
+        parser.section('bayesian_optimizer')
+        parser.add_argument("working_dir", type=str, default='',
                             help="Directory for results and other important stuff.")
-        parser.add_argument("--n_iterations", type=int, default=100,
+        parser.add_argument("n_iterations", type=int, default=100,
                             help="HPBandSter parameter.")
-        parser.add_argument("--run_id", type=str, default='0',
+        parser.add_argument("run_id", type=str, default='0',
                             help="HPBandSter parameter.")
-        parser.add_argument("--eta", type=int, default=3,
+        parser.add_argument("eta", type=int, default=3,
                             help="HPBandSter parameter.")
-        parser.add_argument("--min_budget", type=float, default=1,
+        parser.add_argument("min_budget", type=float, default=1,
                             help="HPBandSter parameter.")
-        parser.add_argument("--max_budget", type=int, default=81,
+        parser.add_argument("max_budget", type=int, default=81,
                             help="HPBandSter parameter.")
-        parser.add_argument("--ping_interval", type=int, default=60,
+        parser.add_argument("ping_interval", type=int, default=10,
                             help="HPBandSter parameter.")
-        parser.add_argument("--nic_name", type=str, default='eth0',
+        parser.add_argument("nic_name", type=str, default='eth0',
                             help="Network interface card used for Pyro4.")
         return parser
 

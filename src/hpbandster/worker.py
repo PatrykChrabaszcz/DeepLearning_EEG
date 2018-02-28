@@ -36,15 +36,15 @@ class Worker(HpBandSterWorker):
     def compute(self, config, budget, **kwargs):
         logger.info('Worker: Starting computation for budget %s ' % budget)
 
-        if config is not None:
+        if config is None:
             raise RuntimeError('Worker received config that is None in compute(...)')
 
-        adjusted_experiment_args = self.budget_decoder.adjusted_arguments(self.experiment_args, budget)
+        adjusted_experiment_args = self.experiment_args.updated_with_configuration(config)
+        adjusted_experiment_args = self.budget_decoder.adjusted_arguments(adjusted_experiment_args, budget)
 
         # Each evaluation can mean multiple folds of CV
         result_list = []
         for experiment_args in adjusted_experiment_args:
-            self.train_manager.init_new_log_dir()
             self.train_manager.train(experiment_args)
             valid_metrics = self.train_manager.validate(experiment_args, log_dir=self.train_manager.log_dir,
                                                         data_type=SequenceDataReader.Validation_Data)

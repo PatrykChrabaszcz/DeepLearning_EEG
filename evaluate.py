@@ -77,5 +77,6 @@ def main(data_path, model_path, log_path, sequence_size, batch_size, readers_cou
         metrics.save_detailed_output('results/%s.json' % name)
         dr.stop_readers()
 
+
 if __name__ == '__main__':
     main()

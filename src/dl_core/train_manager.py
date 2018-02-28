@@ -11,23 +11,28 @@ logger = logging.getLogger(__name__)
 # Connects all components: Model, Reader, Trainer and runs on training/validation/test data.
 # Used for single experiments as well as distributed experiments with Hyperparameter Optimization.
 class TrainManager:
-    def __init__(self, ModelClass, ReaderClass, TrainerClass, save_training_logs, working_dir, **kwargs):
+    def __init__(self, ModelClass, ReaderClass, TrainerClass, main_logs_dir, run_log_dir, **kwargs):
         self.ModelClass = ModelClass
         self.ReaderClass = ReaderClass
         self.TrainerClass = TrainerClass
-        self.save_training_logs = save_training_logs
-        self.working_dir = working_dir
-        self.log_dir = None
-        self.init_new_log_dir()
+        self.main_logs_dir = main_logs_dir
+        self.run_log_dir = run_log_dir
+        self.log_dir = os.path.join(main_logs_dir, run_log_dir)
 
     @staticmethod
     def add_arguments(parser):
-        parser.add_argument("--save_training_logs", type=int, default=0,
-                            help="Whether to save the model and results from the training.")
+        parser.section('train_manager')
+        parser.add_argument("main_logs_dir", type=str,
+                            help="Main directory for training logs from different runs. "
+                                 "New run will be logged inside run_log_dir or inside a new directory if run_log_dir"
+                                 "is left empty.")
+        parser.add_argument("run_log_dir", type=str, default="",
+                            help="Directory for logs for the current run. If trained model already present then will "
+                                 "use it.")
 
-    def init_new_log_dir(self):
-        self.log_dir = os.path.join(self.working_dir, 'training_logs',
-                                    datetime.utcnow().strftime('%Y_%m_%d__%H_%M_%S_%f'))
+    def new_log_dir(self):
+        self.run_log_dir = datetime.utcnow().strftime('%Y_%m_%d__%H_%M_%S_%f')
+        self.log_dir = os.path.join(self.main_logs_dir, self.run_log_dir)
         os.makedirs(self.log_dir, exist_ok=False)
 
     def new_model(self, experiment_arguments):
@@ -45,26 +50,38 @@ class TrainManager:
     def train(self, experiment_arguments):
         model = self.new_model(experiment_arguments)
 
+        if self.run_log_dir is "":
+            self.new_log_dir()
+
+        # Try to restore the model
+        model_path = os.path.join(self.log_dir, 'model')
+        try:
+            model.load_model(model_path)
+            logger.info('Model loaded from %s' % model_path)
+        except FileNotFoundError:
+            logger.info('Could not load the model, %s does not exist.' % model_path)
+
         train_metrics = self._run(model, experiment_arguments, SequenceDataReader.Train_Data, train=True)
 
-        if self.save_training_logs:
-            experiment_arguments_file = os.path.join(self.log_dir, 'config.ini')
-            experiment_arguments.save_to_file(file_path=experiment_arguments_file)
-            train_metrics.save(directory=self.log_dir)
-            model.save_model(os.path.join(self.log_dir, 'model'))
+        # Save training configuration, training logs and model
+        experiment_arguments.run_log_dir = self.run_log_dir
+        experiment_arguments_file = os.path.join(self.log_dir, 'config.ini')
+        experiment_arguments.save_to_file(file_path=experiment_arguments_file)
+        train_metrics.save(directory=self.log_dir)
+        model.save_model(model_path)
 
         return train_metrics
 
-    def validate(self, experiment_arguments, log_dir, data_type=SequenceDataReader.Test_Data):
+    def validate(self, experiment_arguments, data_type=SequenceDataReader.Test_Data):
         model = self.new_model(experiment_arguments)
-        model_file_path = os.path.join(log_dir, 'model')
+        model_file_path = os.path.join(self.log_dir, 'model')
         model.load_model(model_file_path)
         logger.info('Model loaded from %s' % model_file_path)
 
         test_metrics = self._run(model, experiment_arguments, data_type, train=False)
 
-        if self.save_training_logs:
-            test_metrics.save(os.path.join(log_dir, 'additional'))
+        # Save validation/test results in a separate folder (we might want to store multiple validation results)
+        test_metrics.save(os.path.join(self.log_dir, datetime.utcnow().strftime('%Y_%m_%d__%H_%M_%S_%f')))
 
         return test_metrics
 

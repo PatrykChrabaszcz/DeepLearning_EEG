@@ -17,42 +17,43 @@ logger = logging.getLogger(__name__)
 
 class Experiment:
     ExperimentBayesianOptimization = 'BayesianOptimization'
-    ExperimentSingleTrain = 'ExperimentSingleTrain'
-    ExperimentSingleEvaluation = 'ExperimentSingleEvaluation'
-    ExperimentTypes = [ExperimentBayesianOptimization, ExperimentSingleTrain, ExperimentSingleEvaluation]
+    ExperimentSingleTrain = 'SingleTrain'
+    ExperimentContinuousTrain = 'ContinuousTrain'
+    ExperimentSingleEvaluation = 'SingleEvaluation'
+    ExperimentTypes = [ExperimentBayesianOptimization, ExperimentSingleTrain, ExperimentContinuousTrain,
+                       ExperimentSingleEvaluation]
 
     @staticmethod
     # Parsing arguments
     def add_arguments(parser):
-        parser.add_argument("--config_file", type=str, default='',
+        parser.section('experiment')
+        parser.add_argument("config_file", type=str, default='',
                             help="File with .pcs (parameter configuration space) data.")
-        parser.add_argument("--model_class_name", default='SimpleRNN',
+        parser.add_argument("model_class_name", default='SimpleRNN',
                             help="Model class used for the training.")
-        parser.add_argument("--reader_class_name", default='AnomalyDataReader',
+        parser.add_argument("reader_class_name", default='AnomalyDataReader',
                             help="Reader class used for the training.")
-        parser.add_argument("--budget_decoder_class_name", default='SimpleBudgetDecoder',
+        parser.add_argument("budget_decoder_class_name", default='SimpleBudgetDecoder',
                             help="Class used to update setting based on higher budget.")
-        parser.add_argument("--backend", default="Pytorch",
+        parser.add_argument("backend", default="Pytorch",
                             help="Whether to use Tensorflow or Pytorch.")
-        parser.add_argument("--verbose", type=int, default=0, choices=[0, 1],
+        parser.add_argument("verbose", type=int, default=0, choices=[0, 1],
                             help="If set to 1 then log debug messages.")
-        parser.add_argument("--is_master", type=int, default=0, choices=[0, 1],
+        parser.add_argument("is_master", type=int, default=0, choices=[0, 1],
                             help="If set to 1 then it will run thread for BO optimization.")
-        parser.add_argument("--experiment_type", type=str, default=Experiment.ExperimentTypes[0],
+        parser.add_argument("experiment_type", type=str, default=Experiment.ExperimentTypes[0],
                             choices=Experiment.ExperimentTypes,
                             help="TODO Write help message")
-        parser.add_argument("--evaluation_log_dir", type=str, default='',
-                            help="TODO Write help message")
-        parser.add_argument("--evaluation_data_type", type=str, default=SequenceDataReader.Validation_Data,
+        parser.add_argument("evaluation_data_type", type=str, default=SequenceDataReader.Validation_Data,
                             choices=SequenceDataReader.DataTypes,
                             help="TODO Write help message")
         return parser
 
     def __init__(self):
         # Parse initial experiment arguments
-        initial_arguments = ExperimentArguments(use_all_cli_args=False)
+        initial_arguments = ExperimentArguments(sections=('experiment',), use_all_cli_args=False)
         initial_arguments.add_class_arguments(Experiment)
-        initial_arguments.get_arguments(sections=('experiment',))
+        initial_arguments.get_arguments()
 
         verbose = initial_arguments.verbose
         setup_logging(logging.DEBUG if verbose else logging.INFO)
@@ -60,7 +61,6 @@ class Experiment:
         self.is_master = initial_arguments.is_master
         self.experiment_type = initial_arguments.experiment_type
         self.evaluation_data_type = initial_arguments.evaluation_data_type
-        self.evaluation_log_dir = initial_arguments.evaluation_log_dir
 
         backend = initial_arguments.backend.title()
         # Initialize backend (Currently only PyTorch implemented)
@@ -132,16 +132,26 @@ class Experiment:
         self.worker.run(background=True if self.is_master else False)
 
     def run_single_train(self):
-        self.train_manager.init_new_log_dir()
-
         train_metrics = self.train_manager.train(self.experiment_arguments)
-        valid_metrics = self.train_manager.validate(self.experiment_arguments, log_dir=self.train_manager.log_dir,
+        valid_metrics = self.train_manager.validate(self.experiment_arguments,
                                                     data_type=SequenceDataReader.Validation_Data)
 
         logger.info('Train Metrics:')
         logger.info(json.dumps(train_metrics.get_summarized_results(), indent=2, sort_keys=True))
         logger.info('Validation Metrics:')
         logger.info(json.dumps(valid_metrics.get_summarized_results(), indent=2, sort_keys=True))
+
+    def run_continuous_train(self):
+        # Will initialize new log_dir at first run
+        while True:
+            train_metrics = self.train_manager.train(self.experiment_arguments)
+            valid_metrics = self.train_manager.validate(self.experiment_arguments,
+                                                        data_type=self.evaluation_data_type)
+
+            logger.info('Train Metrics:')
+            logger.info(json.dumps(train_metrics.get_summarized_results(), indent=2, sort_keys=True))
+            logger.info('Validation Metrics:')
+            logger.info(json.dumps(valid_metrics.get_summarized_results(), indent=2, sort_keys=True))
 
     def run_single_evaluation(self):
         if self.evaluation_data_type == SequenceDataReader.Train_Data:
@@ -154,7 +164,7 @@ class Experiment:
             if self.experiment_arguments.balanced == 1:
                 logger.warning('Evaluation of training data but balanced is set to 1 (Are you sure?)')
 
-        metrics = self.train_manager.validate(self.experiment_arguments, log_dir=self.evaluation_log_dir,
+        metrics = self.train_manager.validate(self.experiment_arguments,
                                               data_type=self.evaluation_data_type)
 
         logger.info('Metrics %s:' % self.evaluation_data_type)
@@ -164,6 +174,7 @@ class Experiment:
         func_dic = {
             self.ExperimentBayesianOptimization: self.run_bayesian_optimization,
             self.ExperimentSingleTrain: self.run_single_train,
+            self.ExperimentContinuousTrain: self.run_continuous_train,
             self.ExperimentSingleEvaluation: self.run_single_evaluation,
         }
         logger.info('Main Function To Execute: %s' % self.experiment_type)

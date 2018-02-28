@@ -4,6 +4,7 @@ import os
 import numpy as np
 from src.utils import nested_list_len, load_dict
 import logging
+import random
 
 
 logger = logging.getLogger(__name__)
@@ -46,9 +47,11 @@ class AnomalyDataReader(SequenceDataReader):
     normalization_types = [normalization_none, normalization_separate, normalization_full]
 
     class ExampleInfo(SequenceDataReader.SequenceExampleInfo):
-        def __init__(self, info_dict, label_type, offset_size=0, random_mode=0, limit_duration=None):
+        def __init__(self, info_dict, label_type, offset_size=0, random_mode=0, limit_duration=None,
+                     use_augmentation=0):
             super().__init__(example_id=info_dict['sequence_name'], offset_size=offset_size, random_mode=random_mode)
 
+            self.use_augmentation = use_augmentation
             # TODO save normalization in the dictionary
             self.age = (info_dict['age'] - 49.295620438) / 17.3674915241
             self.label = info_dict[label_type]
@@ -68,6 +71,19 @@ class AnomalyDataReader(SequenceDataReader):
             else:
                 raise NotImplementedError('Can not create context for this label_type %s' % label_type)
 
+            self.aug_shift = np.zeros_like(self.mean, dtype=np.float32)
+            self.aug_scale = np.ones_like(self.std, dtype=np.float32)
+
+        def reset(self, sequence_size):
+            super().reset(sequence_size)
+            if self.use_augmentation:
+                self.new_scale_shift()
+            # Reset augmentation scale and shift
+
+        def new_scale_shift(self):
+            self.aug_shift = np.random.normal(scale=0.25, size=self.mean.shape).astype(np.float32)
+            self.aug_scale = np.random.uniform(0.5, 2, size=self.std.shape).astype(np.float32)
+
         def get_length(self):
             return self.length
 
@@ -75,7 +91,17 @@ class AnomalyDataReader(SequenceDataReader):
             index, sequence_size = serialized
             data = self.file_handler.get_data(None, index, index + sequence_size).astype(np.float32)
             data = np.transpose(data)
-            data = (data - self.mean) / self.std
+
+            # Now data has shape time x features
+
+            # if self.random_mode == 2:
+            #     self.new_scale_shift()
+            #     chance = random.choice([0, 1])
+            #     if chance == 1:
+            #         data = data[::-1, :]
+            # data = data[::-1, :]
+            data = ((data - self.mean) / self.std) * self.aug_scale + self.aug_shift
+
             # Time might be needed for some advanced models like PhasedLSTM
             time = np.reshape(np.arange(index, index + sequence_size), newshape=[sequence_size, 1])
 
@@ -85,16 +111,24 @@ class AnomalyDataReader(SequenceDataReader):
     @staticmethod
     def add_arguments(parser):
         SequenceDataReader.add_arguments(parser)
-        parser.add_argument("--label_type", type=str, dest='label_type', choices=AnomalyDataReader.label_types,
+        parser.add_argument("label_type", type=str, dest='label_type', choices=AnomalyDataReader.label_types,
                             help="Path to the directory containing the data")
-        parser.add_argument("--normalization_type", type=str, dest='normalization_type',
+        parser.add_argument("normalization_type", type=str, dest='normalization_type',
                             choices=AnomalyDataReader.normalization_types,
                             help="How to normalize the data.")
+        parser.add_argument("use_augmentation", type=int, choices=[0, 1], default=0,
+                            help="Will add some shift and rescale the data."
+                                 "Idea is to make the network invariant to those transformations")
         return parser
 
-    def _initialize(self, label_type, normalization_type, **kwargs):
+    def _initialize(self, label_type, normalization_type, use_augmentation, **kwargs):
         self.label_type = label_type
         self.normalization_type = normalization_type
+        self.use_augmentation = use_augmentation
+
+        if use_augmentation and self.data_type != SequenceDataReader.Train_Data:
+            logger.warning('For Validation and Test we disable data augmentation')
+            self.use_augmentation = 0
 
         self.limit_examples = None if self.limit_examples <= 0 else self.limit_examples
         self.limit_duration = None if self.limit_duration <= 0 else self.limit_duration
@@ -104,13 +138,14 @@ class AnomalyDataReader(SequenceDataReader):
         logger.debug('limit_examples: %s' % self.limit_examples)
         logger.debug('limit_duration: %s' % self.limit_duration)
 
-    def _load_info_dicts(self, folder_name):
-        info_dir = os.path.join(self.data_path, folder_name, 'info')
+    @staticmethod
+    def load_info_dicts(data_path, folder_name):
+        info_dir = os.path.join(data_path, folder_name, 'info')
         info_files = sorted(os.listdir(info_dir))
         info_dicts = [load_dict(os.path.join(info_dir, i_f)) for i_f in info_files]
 
         for info_dict, info_file in zip(info_dicts, info_files):
-            info_dict['data_file'] = os.path.join(self.data_path, folder_name, 'data', info_file[:-2] + '_raw.fif')
+            info_dict['data_file'] = os.path.join(data_path, folder_name, 'data', info_file[:-2] + '_raw.fif')
             # Compute additional fields (used for new labels and context information)
             info_dict['age_class'] = 1 if info_dict['age'] >= 49 else 0
             info_dict['gender_class'] = 1 if info_dict['gender'] == 'M' else 0
@@ -119,7 +154,7 @@ class AnomalyDataReader(SequenceDataReader):
 
     def _compute_full_normalization(self):
         logger.debug('Find normalization statistics for the full train dataset')
-        info_dicts = self._load_info_dicts('train')
+        info_dicts = self.load_info_dicts(self.data_path, 'train')
         start = int(self.cv_k / self.cv_n * len(info_dicts))
         end = int((self.cv_k + 1) / self.cv_n * len(info_dicts))
 
@@ -141,6 +176,9 @@ class AnomalyDataReader(SequenceDataReader):
             if self.limit_duration != None:
                 logger.warning('Will limit example duration but will compute normalization statistics from full '
                                'recordings.')
+        if self.normalization_type != self.normalization_separate:
+            if self.use_augmentation:
+                logger.warning('Augmentation was only designed for \"separate\" normalization.')
 
         # Train and Validation are located inside the 'train' folder
         if self.data_type == self.Validation_Data or self.data_type == self.Train_Data:
@@ -151,7 +189,7 @@ class AnomalyDataReader(SequenceDataReader):
             raise NotImplementedError('data_type is not from the set {train, validation, test}')
 
         # Load data into dictionaries from the info json files
-        info_dicts = self._load_info_dicts(folder_name)
+        info_dicts = self.load_info_dicts(self.data_path, folder_name)
 
         # Find out what are the names of unique labels
         labels = list(set([info_dict[self.label_type] for info_dict in info_dicts]))
@@ -184,10 +222,6 @@ class AnomalyDataReader(SequenceDataReader):
         if self.normalization_type == self.normalization_full:
             logger.debug('Will normalize using full training dataset.')
             mean, std = self._compute_full_normalization()
-            logger.debug('mean ')
-            logger.debug(mean)
-            logger.debug('std')
-            logger.debug(std)
             for info_dict in info_dicts:
                 info_dict['mean'] = mean
                 info_dict['std'] = std
@@ -208,7 +242,7 @@ class AnomalyDataReader(SequenceDataReader):
 
             self.examples.append([AnomalyDataReader.ExampleInfo(label_info_dict, self.label_type,
                                                                 self.offset_size, self.random_mode,
-                                                                self.limit_duration)
+                                                                self.limit_duration, self.use_augmentation)
                                   for (j, label_info_dict) in enumerate(label_info_dicts)])
 
             logger.debug('Label %s: Number of recordings %d, Cumulative Length %d' %

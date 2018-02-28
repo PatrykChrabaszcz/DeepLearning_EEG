@@ -109,32 +109,39 @@ class SequenceDataReader:
 
     @staticmethod
     def add_arguments(parser):
-        parser.add_argument("--data_path", type=str,
+        parser.section('data_reader')
+
+        parser.add_argument("data_path", type=str,
                             help="Path to the directory containing the data")
-        parser.add_argument("--readers_count", type=int, default=1,
+        parser.add_argument("readers_count", type=int, default=1,
                             help="Number of parallel data readers.")
-        parser.add_argument("--batch_size", type=int, default=64,
+        parser.add_argument("batch_size", type=int, default=64,
                             help="Batch size used for training.")
-        parser.add_argument("--initial_sequence_size", type=int, dest='initial_sequence_size', default=1000,
+        parser.add_argument("validation_batch_size", type=int, default=64,
+                            help="Batch size used for test and validation.")
+        parser.add_argument("initial_sequence_size", type=int, dest='initial_sequence_size', default=1000,
                             help="How many time-points are used for each training sequence.")
-        parser.add_argument("--balanced", type=int, default=1, choices=[0, 1],
+        parser.add_argument("validation_sequence_size", type=int, dest='validation_sequence_size', default=1000,
+                            help="Sometimes it might be better/faster to increase the sequence size for validation."
+                                 "For example for CNNs.")
+        parser.add_argument("balanced", type=int, default=1, choices=[0, 1],
                             help="If greater than 0 then balance mini-batches to have equal number examples per class.")
-        parser.add_argument("--random_mode", type=int, default=0, choices=[0, 1, 2],
+        parser.add_argument("random_mode", type=int, default=0, choices=[0, 1, 2],
                             help="0 - No randomization; 1 - Reads sequentially but each time starts recording from a "
                                  "new offset; 2 - Reads random chunks, should not be used if forget_state=False."
                                  "Applies only to the train data reader, validation data reader has it set to 0.")
-        parser.add_argument("--continuous", type=int, default=0, choices=[0, 1],
+        parser.add_argument("continuous", type=int, default=0, choices=[0, 1],
                             help="If set to 1 then no need to reset after epoch is done.")
-        parser.add_argument("--limit_examples", type=int, default=0,
+        parser.add_argument("limit_examples", type=int, default=0,
                             help="If greater than 0 then will only use this many examples per class.")
-        parser.add_argument("--limit_duration", type=int, default=0,
+        parser.add_argument("limit_duration", type=int, default=0,
                             help="If greater than 0 then each example will only use first limit_duration samples.")
-        parser.add_argument("--forget_state", type=int, default=0, choices=[0, 1],
+        parser.add_argument("forget_state", type=int, default=0, choices=[0, 1],
                             help="If set to 1 then state will not be forward propagated between subsequences from the "
                                  "same example.")
-        parser.add_argument("--cv_n", type=int, default=5,
+        parser.add_argument("cv_n", type=int, default=5,
                             help="How many folds are used for cross validation.")
-        parser.add_argument("--cv_k", type=int, default=4,
+        parser.add_argument("cv_k", type=int, default=4,
                             help="Which fold is used for validation. Indexing starts from 0!")
         return parser
 
@@ -142,7 +149,9 @@ class SequenceDataReader:
                  data_path,
                  readers_count,
                  batch_size,
+                 validation_batch_size,
                  initial_sequence_size,
+                 validation_sequence_size,
                  balanced,
                  random_mode,
                  continuous,
@@ -165,11 +174,15 @@ class SequenceDataReader:
             random_mode = 0
             continuous = 0
             forget_state = 0
+            self.batch_size = validation_batch_size
+            self.sequence_size = validation_sequence_size
+        else:
+            # Keep defaults for other parameters
+            self.batch_size = batch_size
+            self.sequence_size = initial_sequence_size
 
         self.data_path = data_path
 
-        self.batch_size = batch_size
-        self.sequence_size = initial_sequence_size
         self.balanced = balanced
         self.random_mode = random_mode
         self.limit_examples = limit_examples
@@ -257,7 +270,7 @@ class SequenceDataReader:
             logger.debug('Waiting on join for %s reader %d.' % (self.data_type, i))
             try:
                 r.join(timeout=1)
-                logger.debug('%s readers joined.' % self.data_type.title())
+                logger.debug('%s reader joined.' % self.data_type.title())
             except TimeoutError:
                 logger.warning('Reader %d did not join properly, sending terminate.')
                 r.terminate()

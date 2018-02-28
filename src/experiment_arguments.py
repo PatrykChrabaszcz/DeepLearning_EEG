@@ -5,6 +5,8 @@ from copy import deepcopy
 import logging
 import json
 import os
+import io
+
 
 # Initialize logging
 logger = logging.getLogger(__name__)
@@ -12,7 +14,49 @@ logger = logging.getLogger(__name__)
 
 class ExperimentArguments(object):
 
-    def __init__(self, use_all_cli_args=True):
+    # We want to extend standard ArgumentParser with sections
+    # Maybe there is a better approach for that
+    class ExperimentArgumentsParser:
+        def __init__(self, use_all_cli_args=True):
+            self.use_all_cli_args = use_all_cli_args
+            self._parser = ArgumentParser(allow_abbrev=False)
+            self.current_section = None
+
+            # To find section based on argument name
+            self._name_to_section = {}
+            # Dictionary with section as first key and argument name as second key
+            self._args = {}
+
+        def section(self, section):
+            self.current_section = section
+            if section not in self._args.keys():
+                self._args[section] = {}
+
+        def add_argument(self, name, **kwargs):
+            assert self.current_section is not None, 'You need to specify arguments section'
+            assert name not in self._name_to_section.keys(), 'Argument %s already exists' % name
+            self._name_to_section[name] = self.current_section
+            self._parser.add_argument('--%s' % name, **kwargs)
+
+        def parse(self, unknown_args):
+            args_dict = deepcopy(self._args)
+            args, unknown_args = self._parser.parse_known_args(unknown_args)
+            if self.use_all_cli_args:
+                if len(unknown_args) > 0:
+                    logger.error('Unknown CLI arguments %s' % unknown_args)
+                    raise RuntimeError('Unknown CLI arguments %s' % unknown_args)
+
+            # Create a dictionary based on arguments
+            for arg, value in vars(args).items():
+                section = self._name_to_section[arg]
+                args_dict[section][arg] = value
+
+            return args_dict
+
+        def update_defaults(self, **kwargs):
+            self._parser.set_defaults(**kwargs)
+
+    def __init__(self, sections=None, use_all_cli_args=True):
         """
         Class used to extract arguments declared by different classes used for the run.
         Where possible default arguments are provided.
@@ -22,20 +66,29 @@ class ExperimentArguments(object):
         3. Parameters provided by the user as CLI arguments
         4. Parameters specified by Architecture Optimizer.
 
+        :param sections: If not None then only specified .ini file sections will be used
         :param use_all_cli_args: If true then will assert that all CLI arguments were processed successfully.
         """
-        self._use_all_cli_args = use_all_cli_args
-        self._parser = ArgumentParser(allow_abbrev=False)
-        self._arguments = None
 
+        self._sections = sections
         self._ini_conf = None
         self._ini_file_parser = ArgumentParser(allow_abbrev=False)
         self._ini_file_parser.add_argument("--ini_file", type=str, default="",
                                            help="Path to the file with default values "
                                                 "for script parameters (.ini format).")
 
+        self._parser = ExperimentArguments.ExperimentArgumentsParser(use_all_cli_args)
+        self._arguments = None
+
     def save_to_file(self, file_path):
+        """
+        Save internal .ini file with all updates done to it (CLI arguments, ConfigSpace updates)
+        to make it possible to restore experiment with parameters used for training.
+        :param file_path: path to the output file
+        :return
+        """
         with open(file_path, 'w') as config_file:
+            print(self._ini_conf)
             self._ini_conf.write(config_file)
 
     @staticmethod
@@ -58,14 +111,16 @@ class ExperimentArguments(object):
         Adds arguments specified in the class 'class_type' to the internal Argument Parser object.
         This function should be called sequentially for all classes used in the experiment.
 
-        :param class_type: Class Type used to extend argument list.
+
         :return:
         """
         if self._arguments is not None:
-            raise RuntimeError('Can not add a new argument if all arguments are already parsed')
+            raise RuntimeError('Arguments already parsed!')
+
+        self._parser.current_section = None
         class_type.add_arguments(self._parser)
 
-    def get_arguments(self, sections=None, exclude_sections=None):
+    def get_arguments(self):
         """
         Gets a dictionary with parsed arguments.
         Argument source priority (highest first):
@@ -73,8 +128,6 @@ class ExperimentArguments(object):
         2. Arguments provided in the ini_file
         3. Defaults defined in the code
 
-        :param sections: If not None then only specified .ini file sections will be used
-        :param exclude_sections: If not None then will not process those .ini file sections
 
         :return: Dictionary with arguments
 
@@ -82,44 +135,50 @@ class ExperimentArguments(object):
         if self._arguments is not None:
             return self._arguments
 
+        # Initialize ConfigParser to manage .ini file
+        self._ini_conf = ConfigParser()
+
         # Get the file path for the ini_file
         args, unknown_args = self._ini_file_parser.parse_known_args()
+        ini_file = args.ini_file
 
-        # Static class variable to store unknown args. Helpful when we want to assert that all CLI arguments
-        # are understood
-
-        if args.ini_file != "":
-            logger.debug('Updating default parameter values from file: %s' % args.ini_file)
-            self._ini_conf = ConfigParser()
+        # By default ini file is empty string which means that we don't use it
+        if ini_file != "":
+            logger.debug('Updating default parameter values from file: %s' % ini_file)
             self._ini_conf.read(args.ini_file)
 
-            # Tell me if there is a better way to assert that .ini arguments are already in the parser
-            args = self._parser.parse_known_args(unknown_args)[0]
+            # Filtered sections if needed or all sections from the ini file
 
-            sections = sections if sections is not None else self._ini_conf.sections()
-            exclude_sections = exclude_sections if exclude_sections is not None else []
+            args = self._parser.parse(unknown_args)
+
+            sections = self._sections if self._sections is not None else args.keys()
+            sections = set(sections).intersection(set(self._ini_conf.sections()))
+            # Assert that arguments from .ini file are in the script
             for section in sections:
-                if section in exclude_sections:
-                    continue
+                ini_args_dict = dict(self._ini_conf.items(section))
+                args_dict = args[section]
+
+                for key in ini_args_dict.keys():
+                    if key not in args_dict.keys():
+                        raise RuntimeError('Argument %s: %s from .ini file not present '
+                                           'in the script.' % (section, key))
 
                 # Replace script defaults with defaults from the ini file
-                ini_args_dict = dict(self._ini_conf.items(section))
-                for key in ini_args_dict:
-                    if key not in vars(args).keys():
-                        raise RuntimeError('Argument %s from .ini file not present in the script.' %
-                                           key)
-                self._parser.set_defaults(**ini_args_dict)
+                self._parser.update_defaults(**ini_args_dict)
 
-        args, unknown_args = self._parser.parse_known_args(unknown_args)
+        # At this point we should have arguments from default values, .ini file values and CLI values
+        args = self._parser.parse(unknown_args)
 
-        # Good check to make sure that user did not make a mistake when providing experiment parameters.
-        if self._use_all_cli_args:
-            if len(unknown_args) > 0:
-                logger.warning('There are some unknown arguments provided by the user')
-                logger.error(unknown_args)
-                raise RuntimeError('Unknown CLI arguments %s' % unknown_args)
+        # Now save everything to the ConfigParser, such that we will be able to save and restore those parameters
+        # And flatten nested args such that we will be able to use them as **kwargs
+        self._arguments = {}
+        for section in args.keys():
+            for arg_name, arg_value in args[section].items():
+                if section not in self._ini_conf.sections():
+                    self._ini_conf.add_section(section)
+                self._ini_conf.set(section, arg_name, str(arg_value))
+                self._arguments[arg_name] = arg_value
 
-        self._arguments = vars(args)
         return self._arguments
 
     def updated_with_configuration(self, configuration):
@@ -142,8 +201,18 @@ class ExperimentArguments(object):
         return arguments
 
     def copy(self):
+        assert self._ini_conf is not None and self._arguments is not None, 'Can only copy initialized arguments!'
+
         experiment_arguments = ExperimentArguments()
         experiment_arguments._arguments = deepcopy(self._arguments)
+
+        config_string = io.StringIO()
+        self._ini_conf.write(config_string)
+        # We must reset the buffer ready for reading.
+        config_string.seek(0)
+        experiment_arguments._ini_conf = ConfigParser()
+        experiment_arguments._ini_conf.read_file(config_string)
+
         return experiment_arguments
 
     def __getattr__(self, item):
@@ -165,7 +234,7 @@ class ExperimentArguments(object):
             # file and restore experiment
             for section in self._ini_conf.sections():
                 if self._ini_conf.has_option(section, key):
-                    self._ini_conf.set(section, key, value)
+                    self._ini_conf.set(section, key, str(value))
                     return
             raise RuntimeError('Could not set field %s in the ConfigParser object' % key)
 

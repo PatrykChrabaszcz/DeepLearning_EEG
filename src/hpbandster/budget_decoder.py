@@ -1,6 +1,3 @@
-from copy import deepcopy
-
-
 class BudgetDecoderBase:
     def __init__(self, **kwargs):
         pass
@@ -27,6 +24,13 @@ class SimpleBudgetDecoder(BudgetDecoderBase):
                 adjusted_arguments = arguments.copy()
                 adjusted_arguments.cv_n = c_n
                 adjusted_arguments.cv_k = c_k
+                adjusted_arguments_list.append(adjusted_arguments)
+        elif budget == 27:
+            for c_n, c_k in [(9, i) for i in range(9)]:
+                adjusted_arguments = arguments.copy()
+                adjusted_arguments.cv_n = c_n
+                adjusted_arguments.cv_k = c_k
+                adjusted_arguments.budget = arguments.budget * 3
                 adjusted_arguments_list.append(adjusted_arguments)
 
         return adjusted_arguments_list

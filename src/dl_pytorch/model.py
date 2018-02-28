@@ -4,7 +4,7 @@ from torch.autograd import Variable
 import numpy as np
 from src.dl_core.model import ModelBase
 import logging
-from src.dl_pytorch.utils import SeparateChannelCNN, AllChannelsCNN, RNN
+from src.dl_pytorch.utils import SeparateChannelCNN, AllChannelsCNN, RNN, QRNN
 from torchviz import make_dot
 
 
@@ -23,9 +23,10 @@ class PytorchModelBase(nn.Module, ModelBase):
 
     @staticmethod
     def add_arguments(parser):
-        parser.add_argument("--batch_norm", dest="batch_norm", type=int, default=0, choices=[0, 1],
+        parser.section('model')
+        parser.add_argument("batch_norm", type=int, default=0, choices=[0, 1],
                             help="Whether to use batch norm or not", )
-        parser.add_argument("--skip_mode", dest="skip_mode", type=str, default='none',
+        parser.add_argument("skip_mode", type=str, default='none',
                             choices=['none', 'add', 'concat'],
                             help="Whether to skip connections", )
         return parser
@@ -50,32 +51,36 @@ class RnnBase(PytorchModelBase):
     cell_mapper = {
         'LSTM': nn.LSTM,
         'GRU': nn.GRU,
+        'QRNN': QRNN
     }
 
     @staticmethod
     def add_arguments(parser):
         PytorchModelBase.add_arguments(parser)
-        parser.add_argument("--rnn_hidden_size", dest="rnn_hidden_size", type=int, default=128,
+        parser.add_argument("rnn_hidden_size", type=int, default=128,
                             help="Number of neurons in the RNN layer.")
-        parser.add_argument("--rnn_num_layers", dest="rnn_num_layers", type=int, default=3,
+        parser.add_argument("rnn_num_layers", type=int, default=3,
                             help="Number of layers in the RNN network.")
-        parser.add_argument("--dropout", dest="dropout", type=float, default=0.0,
+        parser.add_argument("dropout_f", type=float, default=0.0,
                             help="Dropout value.")
-        parser.add_argument("--rnn_cell_type", dest="rnn_cell_type", type=str, choices=RnnBase.cell_mapper.keys(),
+        parser.add_argument("dropout_h", type=float, default=0.0,
+                            help="Dropout value.")
+        parser.add_argument("rnn_cell_type", type=str, choices=RnnBase.cell_mapper.keys(),
                             default='GRU',
                             help="RNN cell type.")
-        parser.add_argument("--use_context", dest="use_context", type=int, choices=[0, 1], default=0,
+        parser.add_argument("use_context", type=int, choices=[0, 1], default=0,
                             help="If 1 then context information will be used.")
         return parser
 
-    def __init__(self, input_size, rnn_hidden_size, rnn_num_layers, output_size, dropout,
+    def __init__(self, input_size, rnn_hidden_size, rnn_num_layers, output_size, dropout_f, dropout_h,
                  rnn_cell_type, use_context, context_size, **kwargs):
         super().__init__(**kwargs)
         self.input_size = input_size
         self.rnn_hidden_size = rnn_hidden_size
         self.rnn_num_layers = rnn_num_layers
         self.output_size = output_size
-        self.dropout = dropout
+        self.dropout_f = dropout_f
+        self.dropout_h = dropout_h
         self.rnn_cell_type = rnn_cell_type
         self.use_context = use_context
         self.context_size = context_size
@@ -84,7 +89,7 @@ class RnnBase(PytorchModelBase):
         if self.rnn_cell_type == "LSTM":
             return np.array(np.random.normal(0, 1.0, (self.rnn_num_layers, self.rnn_hidden_size)), dtype=np.float32), \
                    np.array(np.random.normal(0, 1.0, (self.rnn_num_layers, self.rnn_hidden_size)), dtype=np.float32)
-        elif self.rnn_cell_type == "GRU":
+        elif self.rnn_cell_type in ["GRU", "QRNN"]:
             random_state = np.random.normal(0, 1.0, (self.rnn_num_layers, self.rnn_hidden_size))
             return np.clip(random_state, -1, 1).astype(dtype=np.float32)
         else:
@@ -99,7 +104,7 @@ class RnnBase(PytorchModelBase):
             assert (states_0.shape == states_1.shape)
 
             return [(a, b) for (a, b) in zip(states_0, states_1)]
-        elif self.rnn_cell_type == "GRU":
+        elif self.rnn_cell_type in ["GRU", "QRNN"]:
             states = np.swapaxes(states.cpu().data.numpy(), 0, 1)
             return [s for s in states]
         else:
@@ -115,7 +120,7 @@ class RnnBase(PytorchModelBase):
                                  Variable(torch.from_numpy(states_1), requires_grad=False)
             return states_0, states_1
 
-        elif self.rnn_cell_type == "GRU":
+        elif self.rnn_cell_type in ["GRU", "QRNN"]:
             states = np.stack(states)
             states = np.swapaxes(states, 1, 0)
             states = Variable(torch.from_numpy(states), requires_grad=False)
@@ -132,7 +137,8 @@ class SimpleRNN(RnnBase):
 
         cell = RnnBase.cell_mapper[self.rnn_cell_type]
         self.rnn = RNN(cell=cell, in_size=input_size, hidden_size=self.rnn_hidden_size, num_layers=self.rnn_num_layers,
-                       dropout=self.dropout, batch_norm=self.batch_norm, skip_mode=self.skip_mode)
+                       dropout_f=self.dropout_f, dropout_h=self.dropout_h,
+                       batch_norm=self.batch_norm, skip_mode=self.skip_mode)
 
         # self.dropout_layer = nn.Dropout(p=self.dropout)
 
@@ -168,24 +174,24 @@ class ConvRNN(RnnBase):
     @staticmethod
     def add_arguments(parser):
         RnnBase.add_arguments(parser)
-        parser.add_argument("--cnn_c_layers", dest="cnn_c_layers", type=int, default=3,
+        parser.add_argument("cnn_c_layers", type=int, default=3,
                             help="Number of layers in the first cnn block. "
                                  "Each channel processed separately the same filters.")
-        parser.add_argument("--cnn_c_channels", dest="cnn_c_channels", type=int, default=10,
+        parser.add_argument("cnn_c_channels", type=int, default=10,
                             help="Number of filters in the first cnn block.")
-        parser.add_argument("--cnn_c_width", dest="cnn_c_width", type=int, default=10,
+        parser.add_argument("cnn_c_width", type=int, default=10,
                             help="Width in time dimension of the kernels in the first cnn block.")
-        parser.add_argument("--cnn_c_stride", dest="cnn_c_stride", type=int, default=2,
+        parser.add_argument("cnn_c_stride", type=int, default=2,
                             help="Stride for the first CNN block.")
 
-        parser.add_argument("--cnn_f_layers", dest="cnn_f_layers", type=int, default=3,
+        parser.add_argument("cnn_f_layers", type=int, default=3,
                             help="Number of layers in the second cnn block. "
                                  "All channels processed together")
-        parser.add_argument("--cnn_f_channels", dest="cnn_f_channels", type=int, default=10,
+        parser.add_argument("cnn_f_channels", type=int, default=10,
                             help="Number of filters in the second cnn block.")
-        parser.add_argument("--cnn_f_width", dest="cnn_f_width", type=int, default=10,
+        parser.add_argument("cnn_f_width", type=int, default=10,
                             help="Width in time dimension of the kernels in the second cnn block.")
-        parser.add_argument("--cnn_f_stride", dest="cnn_f_stride", type=int, default=2,
+        parser.add_argument("cnn_f_stride", type=int, default=2,
                             help="Stride for the second CNN block.")
         return parser
 
@@ -203,7 +209,7 @@ class ConvRNN(RnnBase):
 
         cell = RnnBase.cell_mapper[self.rnn_cell_type]
         self.rnn = RNN(cell=cell, in_size=cnn_f_channels, hidden_size=self.rnn_hidden_size,
-                       num_layers=self.rnn_num_layers, dropout=self.dropout, batch_norm=self.batch_norm)
+                       num_layers=self.rnn_num_layers, dropout_f=self.dropout, batch_norm=self.batch_norm)
 
         # self.dropout_layer = nn.Dropout(p=self.dropout)
 
@@ -229,11 +235,16 @@ class ConvRNN(RnnBase):
 
 class ChronoNet(RnnBase):
     class InceptionBlock(nn.Module):
-        def __init__(self, in_size, out_size=32):
+        def __init__(self, in_size, batch_norm, out_size=32):
             super().__init__()
             self.conv_1 = nn.Conv1d(in_channels=in_size, out_channels=out_size, kernel_size=2, stride=2, padding=0)
             self.conv_2 = nn.Conv1d(in_channels=in_size, out_channels=out_size, kernel_size=4, stride=2, padding=1)
             self.conv_3 = nn.Conv1d(in_channels=in_size, out_channels=out_size, kernel_size=8, stride=2, padding=3)
+
+            self.batch_norm = batch_norm
+            if batch_norm:
+                self.bnn = nn.BatchNorm1d(num_features=3*out_size)
+
             self.non_linearity = nn.ReLU
 
         def forward(self, x):
@@ -241,20 +252,22 @@ class ChronoNet(RnnBase):
             x = torch.transpose(x, 1, 2)
             x = torch.cat([self.conv_1(x), self.conv_2(x), self.conv_3(x)], dim=1)
             x = self.non_linearity()(x)
+            # if self.batch_norm:
+            #     x = self.bnn(x)
             # Transpose back to N x L x C
             x = torch.transpose(x, 1, 2)
             return x
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.inception_block_1 = ChronoNet.InceptionBlock(self.input_size, out_size=32)
-        self.inception_block_2 = ChronoNet.InceptionBlock(32*3, out_size=32)
-        self.inception_block_3 = ChronoNet.InceptionBlock(32*3, out_size=32)
+        self.inception_block_1 = ChronoNet.InceptionBlock(self.input_size, self.batch_norm, out_size=32)
+        self.inception_block_2 = ChronoNet.InceptionBlock(32*3, self.batch_norm, out_size=32)
+        self.inception_block_3 = ChronoNet.InceptionBlock(32*3, self.batch_norm, out_size=32)
 
         cell = RnnBase.cell_mapper[self.rnn_cell_type]
         self.rnn = RNN(cell=cell, in_size=32*3, hidden_size=self.rnn_hidden_size,
-                       num_layers=self.rnn_num_layers, dropout=self.dropout, batch_norm=self.batch_norm,
-                       skip_mode=self.skip_mode)
+                       num_layers=self.rnn_num_layers, dropout_f=self.dropout_f, dropout_h=self.dropout_h,
+                       batch_norm=self.batch_norm, skip_mode=self.skip_mode)
 
         self.fc = nn.Linear(in_features=self.rnn_hidden_size, out_features=self.output_size, bias=True)
 

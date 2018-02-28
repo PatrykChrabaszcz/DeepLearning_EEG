@@ -1,18 +1,31 @@
 import os
 import json
 
-dir = '/mhome/chrabasp/results_single/cp'
-
+dir = '/mhome/chrabasp/Different_test'
 
 results = []
-for train_run in os.listdir(dir):
+for file in os.walk(dir):
+    file = os.path.join(file[0], "test_detailed_results.json")
     try:
-        file = os.path.join(dir, train_run, 'valid', 'detailed_results.json')
         with open(file, 'r') as f:
             results.append(json.load(f))
     except:
-        print('Could not process results from the folder: %s' % train_run)
+        pass
 
+#
+# results = []
+# for train_run in os.listdir(dir):
+#     dir_2 = os.path.join(dir, train_run)
+#     for f in os.listdir(dir_2):
+#         if os.
+#
+#     try:
+#         file = os.path.join(dir, train_run, 'valid', 'detailed_results.json')
+#         with open(file, 'r') as f:
+#             results.append(json.load(f))
+#     except:
+#         print('Could not process results from the folder: %s' % train_run)
+#
 
 scores = {}
 for r in results:
