@@ -1,7 +1,7 @@
 from hpbandster.distributed.worker import Worker as HpBandSterWorker
 from src.data_reading.data_reader import SequenceDataReader
 from hpbandster.distributed.utils import nic_name_to_host
-from src.dl_core.metrics import average_metrics_results
+from src.deep_learning.metrics import average_metrics_results
 from time import sleep
 import Pyro4
 import logging
@@ -45,9 +45,13 @@ class Worker(HpBandSterWorker):
         # Each evaluation can mean multiple folds of CV
         result_list = []
         for experiment_args in adjusted_experiment_args:
+            # If we do not restore the training initialize a new directory
+            if experiment_args.run_log_folder == "":
+                experiment_args.run_log_folder = self.train_manager.get_unique_dir()
+
             self.train_manager.train(experiment_args)
-            valid_metrics = self.train_manager.validate(experiment_args, log_dir=self.train_manager.log_dir,
-                                                        data_type=SequenceDataReader.Validation_Data)
+
+            valid_metrics = self.train_manager.validate(experiment_args, data_type=SequenceDataReader.Validation_Data)
             result_list.append(valid_metrics.get_summarized_results())
 
         # TODO Aggregate results and return format that is compatible with HPBandSter

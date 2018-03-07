@@ -102,7 +102,7 @@ class DataGenerator:
             # TODO: We would like to read some more information from the description files
             # txt_file_path = file_path[:-8] + '.txt'
 
-    def __init__(self, data_path, cache_path, secs_to_cut, sampling_freq, duration_mins, max_abs_value,
+    def __init__(self, data_path, cache_path, secs_to_cut, sampling_freq, duration_mins, max_abs_value, use_ekg,
                  version='v1.1.2'):
         """
         :param data_path:
@@ -114,6 +114,7 @@ class DataGenerator:
         """
         self.data_path = data_path
         self.cache_path = cache_path
+        self.use_ekg = use_ekg
         self.version = version
 
         self.secs_to_cut_at_start_end = secs_to_cut
@@ -222,7 +223,9 @@ class DataGenerator:
         # Find out normalization statistics:
         preprocessing_functions = self.default_preprocessing_functions()
 
-        ch_names = DataGenerator.wanted_electrodes['EEG'] + DataGenerator.wanted_electrodes['EKG']
+        ch_names = DataGenerator.wanted_electrodes['EEG']
+        if self.use_ekg:
+            ch_names = ch_names + DataGenerator.wanted_electrodes['EKG']
 
         for split_type, split_files in zip(['train', 'test'],
                                            [train_files, test_files]):
@@ -234,15 +237,17 @@ class DataGenerator:
 
             for i, file in enumerate(split_files):
                 try:
-                    data, info_dict = self._load_file(file, preprocessing_functions, sensor_types=('EEG', 'EKG1'))
+                    sensor_types = ('EEG', 'EKG1') if self.use_ekg else ('EEG',)
+                    data, info_dict = self._load_file(file, preprocessing_functions, sensor_types)
                 except RuntimeError:
-                    data, info_dict = self._load_file(file, preprocessing_functions, sensor_types=('EEG', 'EKG'))
+                    sensor_types = ('EEG', 'EKG') if self.use_ekg else ('EEG',)
+                    data, info_dict = self._load_file(file, preprocessing_functions, sensor_types)
 
                 # Find normalization for the data
-                mean = list(str(f) for f in np.mean(data, axis=1, dtype=np.float32))
-                std = list(str(f) for f in np.std(data, axis=1, dtype=np.float32))
-                info_dict['mean'] = mean
-                info_dict['std'] = std
+                mean = np.mean(data, dtype=np.float32)
+                std = np.std(data, dtype=np.float32)
+                info_dict['mean'] = float(mean)
+                info_dict['std'] = float(std)
 
                 name = '%s_%s_Age_%s_Gender_%s' % (str(info_dict['recording_date']), str(info_dict['sequence_name']),
                                                    str(info_dict['age']), info_dict['gender'])
@@ -265,7 +270,8 @@ class DataGenerator:
 @click.option('--sampling_freq', default=100.0, help='Signal will be preprocessed to the desired frequency.')
 @click.option('--duration_min', default=0, help='Duration of the recording.')
 @click.option('--max_abs_value', default=800, help='Clip if channel value is grater than max_abs_value')
-def main(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value):
+@click.option('--use_ekg', default=0, type=int, help='Clip if channel value is grater than max_abs_value')
+def main(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value, use_ekg):
     print('Settings:')
     print('Data path: %s' % data_path)
     print('Cache path: %s' % cache_path)
@@ -273,8 +279,10 @@ def main(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_ab
     print('Sampling frequency: %d' % sampling_freq)
     print('Duration of the recording: %d' % duration_min)
     print('Maximum absolute value: %g' % max_abs_value)
+    print('Use EKG set to: %d' % use_ekg)
 
-    data_generator = DataGenerator(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value)
+    data_generator = DataGenerator(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value,
+                                   use_ekg)
     data_generator.prepare()
 
 

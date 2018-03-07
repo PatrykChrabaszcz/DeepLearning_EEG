@@ -1,7 +1,5 @@
-from tensorflow.contrib.rnn import BasicLSTMCell, GRUCell, LSTMBlockFusedCell, LSTMBlockCell, PhasedLSTMCell, LayerNormBasicLSTMCell
-from src.dl_tensorflow.utils import MultiPhasedLSTMCell
-from tensorflow.contrib.cudnn_rnn import CudnnLSTM
-from tensorflow.contrib.rnn import RNNCell
+from tensorflow.contrib.rnn import BasicLSTMCell, GRUCell, PhasedLSTMCell, LayerNormBasicLSTMCell
+from src.deep_learning.tensorflow import MultiPhasedLSTMCell
 from tensorflow.python.util.nest import flatten
 from tensorflow.contrib.layers import fully_connected
 import tensorflow as tf

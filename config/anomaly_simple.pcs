@@ -1,6 +1,16 @@
 # Model
-l2_decay real [0.0000001, 0.001] [0.001] log
+l2_decay real [0.000001, 0.0001] [0.0001] log
 lr real [0.0001, 0.01] [0.001] log
-rnn_num_layers integer [1, 4] [2]
-batch_norm categorical {0, 1} [1]
-dropout real [0.0, 0.9] [0.9]
+rnn_num_layers integer [1, 8] [3]
+rnn_hidden_size integer [8, 256] [32]
+dropout_h real [0.0, 0.8] [0.0]
+dropout_i real [0.0, 0.8] [0.0]
+dropout_f real [0.0, 0.8] [0.0]
+rnn_cell_type categorical {LSTM, GRU} [GRU]
+skip_mode categorical {add, concat, none} [none]
+initial_sequence_size integer [50, 5000] [500]
+cosine_decay categorical {0, 1} [1]
+batch_norm categorical {0, 1} [0]
+use_context categorical {0, 1} [0]
+use_augmentation categorical {0, 1} [0]
+objective_type categorical {CrossEntropy_last, CrossEntropy_all} [CrossEntropy_last]

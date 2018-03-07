@@ -1,4 +1,3 @@
-from src.dl_tensorflow.model import SimpleRNN
 #import unittest
 from src.data_reading.finger_data_reader import FingerDataReader
 

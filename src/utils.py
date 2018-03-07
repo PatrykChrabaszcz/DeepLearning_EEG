@@ -3,14 +3,15 @@ import logging
 import os
 import sys
 import colorlog
-import pickle
 import json
+from datetime import datetime
 
 
-def setup_logging(level=logging.INFO):
+def setup_logging(main_logs_dir, level=logging.INFO):
     root = logging.getLogger()
     root.setLevel(level)
     format = '%(asctime)s, %(process)-6s %(levelname)-5s %(module)s: %(message)s'
+
     date_format = '%H:%M:%S'
     if 'colorlog' in sys.modules and os.isatty(2):
         cformat = '%(log_color)s' + format
@@ -21,9 +22,17 @@ def setup_logging(level=logging.INFO):
                                                                         'CRITICAL': 'bold_red'})
     else:
         f = logging.Formatter(format, date_format)
+
     ch = logging.StreamHandler()
     ch.setFormatter(f)
     root.addHandler(ch)
+
+    os.makedirs(os.path.join(main_logs_dir, 'log'), exist_ok=True)
+    log_file = os.path.join(main_logs_dir, 'log', datetime.utcnow().strftime('%Y_%m_%d__%H_%M_%S_%f.log'))
+    fh = logging.FileHandler(log_file)
+    ff = logging.Formatter(format, date_format)
+    fh.setFormatter(ff)
+    root.addHandler(fh)
 
 
 def nested_list_len(v):

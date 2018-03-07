@@ -201,7 +201,8 @@ class SequenceDataReader:
         # Train or Validation type
         self.data_type = data_type
         self.allow_smaller_batch = allow_smaller_batch
-        # If set to true then after example is finished it will be immediately reset
+        # If set to true then after example is finished it will be immediately reset, so it won't be possible to
+        # detect when epoch ends
         self.continuous = continuous
 
         # Info Queue -> Information that is used to read a proper chunk of data from a proper file
@@ -210,10 +211,10 @@ class SequenceDataReader:
         # examples
         self.queue_limit = self.batch_size * 5
 
-        # Data Queue -> Data with labels
+        # Data Queue -> Data with labels used for training
         self.data_queue = multiprocessing.Queue()
 
-        # Number of samples to read in the current epoch
+        # Counts number of samples inside the info_queue
         self.samples_count = 0
 
         # self.examples[i] -> List with examples for class i
@@ -275,7 +276,6 @@ class SequenceDataReader:
                 logger.warning('Reader %d did not join properly, sending terminate.')
                 r.terminate()
 
-    # Will stop when stop_readers_event is set unless info_queue is empty
     # If info_queue is empty then will stop if receives None as example_id
     @staticmethod
     def read_sample_function(info_queue, output_queue, examples_dict):

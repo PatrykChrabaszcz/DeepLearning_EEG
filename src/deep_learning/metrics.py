@@ -225,9 +225,45 @@ class RegressionMetrics:
     #         #stats = self.results
 
 
+class SimpleLossMetrics:
+    def __init__(self, name, output_size):
+        self.name = name
+        self.loss = 0
+        self.loss_cnt = 0
+
+        self.recent_loss_array = [0] * 100
+        self.recent_loss_bs_array = [0] * 100
+        self.recent_loss_index = 0
+
+        self.name = name
+
+    def append_results(self, ids, output, labels, loss, batch_size):
+        self.loss += loss * batch_size
+        self.loss_cnt += batch_size
+
+        self.recent_loss_array[self.recent_loss_index] = loss * batch_size
+        self.recent_loss_bs_array[self.recent_loss_index] = batch_size
+        self.recent_loss_index = (self.recent_loss_index + 1) % 100
+
+    def get_current_loss(self):
+        return sum(self.recent_loss_array) / sum(self.recent_loss_bs_array)
+
+    def get_summarized_results(self):
+        return {'loss': self.loss/max(1, self.loss_cnt)}
+
+    def save(self, directory):
+        os.makedirs(directory, exist_ok=True)
+
+        res = self.get_summarized_results()
+
+        with open(os.path.join(directory, '%s_summarized_results.json' % self.name), 'w') as f:
+            json.dump(res, f, sort_keys=True, indent=2)
+
+
 def create_metrics(name, objective_type, output_size):
     if 'CrossEntropy' in objective_type:
-        return ClassificationMetrics(name, output_size)
+        return SimpleLossMetrics(name, output_size)
+        #return ClassificationMetrics(name, output_size)
     elif 'MeanSquaredError' in objective_type or 'L1Loss' in objective_type:
         return RegressionMetrics()
     else:

@@ -5,7 +5,7 @@ import torch
 from torch.autograd import Variable
 
 from src.data_reading.data_reader import SequenceDataReader
-from src.dl_core.metrics import RegressionMetrics
+from src.dl_core import RegressionMetrics
 from src.utils import setup_logging
 from tutorial.data_reader import TutorialDataReader
 from tutorial.model import TutorialRNN

@@ -1,6 +1,5 @@
-from src.dl_core.model_trainer import ModelTrainerBase
-from src.dl_core.model import ModelBase
-from src.dl_core.metrics import RegressionMetrics
+from src.dl_core import ModelTrainerBase
+from src.dl_core import RegressionMetrics
 from torch.autograd import Variable
 from torch import nn
 import torch

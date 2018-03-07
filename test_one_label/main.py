@@ -5,8 +5,8 @@ from time import strftime
 import click
 
 from src.data_reading.data_reader import SequenceDataReader
-from src.dl_core.model import ModelBase
-from src.dl_core.model_trainer import ModelTrainerBase
+from src.dl_core import ModelBase
+from src.dl_core import ModelTrainerBase
 from src.result_logger import ResultsLogger
 from src.utils import setup_logging
 from test_one_label.data_reader import OneLabelDataReader
@@ -32,8 +32,8 @@ def main(sequence_size, batch_size, learning_rate, weight_decay, readers,
          num_layers, num_neurons, backend, forget_state, cell_type, loss_type):
     print(os.getcwd())
     logger.info('Will use PyTorch backend')
-    from src.dl_pytorch.model import SimpleRNN
-    from src.dl_pytorch.model_trainer import ModelTrainer
+    from src.dl_pytorch import SimpleRNN
+    from src.deep_learning.pytorch.model_trainer import ModelTrainer
 
     time_string = strftime("%Y%m%d-%H%M%S")
     experiment_name = 'Random_Test_Backend(%s)_SeqSize(%s)_LR(%s)_WD(%s)_%s' % \

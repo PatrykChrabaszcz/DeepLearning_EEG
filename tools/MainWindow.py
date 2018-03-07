@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import QMainWindow, QVBoxLayout, QTextEdit, QWidget, QActio
 from torch.autograd import Variable
 
 from src.data_reading.data_reader import AnomalyDataReader
-from src.dl_pytorch.model import SimpleRNN
+from src.dl_pytorch import SimpleRNN
 from tools.PlotWidget import ChartWidget
 
 

@@ -1,13 +1,19 @@
-from src.dl_core.model_trainer import ModelTrainerBase
-from src.dl_core.model import ModelBase
+from src.deep_learning.model_trainer import ModelTrainerBase
 from torch.autograd import Variable
 from torch import nn
 import torch
-from src.dl_pytorch.optimizer import AdamW, CosineRestartsScheduler, ScheduledOptimizer
+from src.deep_learning.pytorch.optimizer import AdamW, CosineScheduler, ScheduledOptimizer
 import logging
+from src.deep_learning.metrics import SimpleLossMetrics
 
 
 logger = logging.getLogger(__name__)
+
+criterion_dict = {
+    'CrossEntropy': nn.CrossEntropyLoss,
+    'MeanSquaredError': nn.MSELoss,
+    'L1Loss': nn.L1Loss
+}
 
 
 class ModelTrainer(ModelTrainerBase):
@@ -15,14 +21,7 @@ class ModelTrainer(ModelTrainerBase):
         super().__init__(**kwargs)
 
         self.cuda = cuda
-        if 'CrossEntropy' in self.objective_type:
-            self.criterion = nn.CrossEntropyLoss()
-        elif 'MeanSquaredError' in self.objective_type:
-            self.criterion = nn.MSELoss()
-        elif 'L1Loss' in self.objective_type:
-            self.criterion = nn.L1Loss()
-        else:
-            raise NotImplementedError('This objective type is not implemented inside the ModelTrainer class')
+        self.criterion = criterion_dict[self.objective_type.split('_')[0]]()
 
         if self.cuda:
             self.model = self.model.cuda()
@@ -45,14 +44,13 @@ class ModelTrainer(ModelTrainerBase):
         else:
             raise NotImplementedError('This optimizer is not implemented')
 
-        if self.cosine_restarts_decay:
-            if self.budget_type != 'iteration':
-                raise RuntimeError('Cosine decay not implemented (yet) for time or epoch budget.')
+        if self.cosine_decay:
             logger.info('Will use cosine restarts decay')
-            self.scheduler = CosineRestartsScheduler(self.optimizer, first_decay_steps=self.budget,
-                                                     t_mul=1.0, m_mul=1.0, alpha=0.0)
-            self.optimizer = ScheduledOptimizer(self.scheduler, self.optimizer,
-                                                decay_wd=decay_wd, normalize_wd=decay_wd)
+            self.scheduler = CosineScheduler(self.optimizer)
+        else:
+            self.scheduler = None
+
+        self.optimizer = ScheduledOptimizer(self.optimizer, self.scheduler, decay_wd=decay_wd)
 
     @staticmethod
     def add_arguments(parser):
@@ -62,7 +60,7 @@ class ModelTrainer(ModelTrainerBase):
 
         return parser
 
-    def _one_iteration(self, batch, time, hidden, labels, context, update=False):
+    def _one_iteration(self, batch, time, hidden, labels, context, update=False, progress=0.0):
         if update:
             self.model.train()
         else:
@@ -79,7 +77,7 @@ class ModelTrainer(ModelTrainerBase):
             batch = batch.cuda()
             labels = labels.cuda()
             if isinstance(hidden, tuple):
-                hidden = (h.cuda() for h in hidden)
+                hidden = tuple(h.cuda() for h in hidden)
             else:
                 hidden = hidden.cuda()
             if self.model.context_size > 0:
@@ -102,7 +100,7 @@ class ModelTrainer(ModelTrainerBase):
         if update:
             self.optimizer.zero_grad()
             loss.backward()
-
+            #
             # total_norm = 0
             # for p in list(filter(lambda p: p.grad is not None, self.model.parameters())):
             #     param_norm = p.grad.data.norm(2)
@@ -111,12 +109,17 @@ class ModelTrainer(ModelTrainerBase):
             #
             # print('Gradient norm: ', total_norm)
 
-            torch.nn.utils.clip_grad_norm(self.model.parameters(), 1)
-            self.optimizer.step()
+            torch.nn.utils.clip_grad_norm(self.model.parameters(), self.gradient_clip)
+
+            self.optimizer.step(progress=progress)
 
         return outputs, hidden, loss
 
     def _gather_results(self, ids, outputs, labels, loss, batch_size, metrics):
-        metrics.append_results(ids, outputs.cpu().data.numpy(), labels, loss.cpu().data.numpy()[0],
-                               batch_size=batch_size)
+        if self.metrics_class == SimpleLossMetrics:
+            metrics.append_results(ids, None, None, loss.cpu().data.numpy()[0],
+                                   batch_size=batch_size)
+        else:
+            metrics.append_results(ids, outputs.cpu().data.numpy(), labels, loss.cpu().data.numpy()[0],
+                                   batch_size=batch_size)
 

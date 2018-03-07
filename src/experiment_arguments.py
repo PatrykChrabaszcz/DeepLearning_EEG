@@ -144,6 +144,8 @@ class ExperimentArguments(object):
 
         # By default ini file is empty string which means that we don't use it
         if ini_file != "":
+            assert os.path.isfile(ini_file), 'Could not find specified (%s) ini file' % ini_file
+
             logger.debug('Updating default parameter values from file: %s' % ini_file)
             self._ini_conf.read(args.ini_file)
 

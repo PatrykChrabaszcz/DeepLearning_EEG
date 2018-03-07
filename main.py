@@ -9,5 +9,4 @@ if __name__ == '__main__':
     logger.info('Create experiment')
     experiment = Experiment()
 
-    logger.info('Start hyper-parameter search')
     experiment.main()

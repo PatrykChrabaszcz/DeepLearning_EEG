@@ -1,4 +1,4 @@
-from src.dl_tensorflow.model import SimpleRNN
+from src.deep_learning.tensorflow import SimpleRNN
 import unittest
 import numpy as np
 

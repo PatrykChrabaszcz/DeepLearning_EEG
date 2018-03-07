@@ -1,5 +1,5 @@
 import tensorflow as tf
-from src.dl_core.model_trainer import ModelTrainerBase
+from src.dl_core import ModelTrainerBase
 
 
 class ModelTrainer(ModelTrainerBase):

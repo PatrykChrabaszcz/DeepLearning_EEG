@@ -1,13 +1,11 @@
 import logging
-import re
 from os import makedirs
 import os
 import click
 import json
 
 from src.data_reading.anomaly_data_reader import AnomalyDataReader
-from src.data_reading.data_reader import SequenceDataReader
-from src.dl_pytorch.model_trainer import ModelTrainer
+from src.deep_learning.pytorch.model_trainer import ModelTrainer
 from src.utils import setup_logging
 
 # Initialize logging
@@ -31,7 +29,7 @@ def main(data_path, model_path, log_path, sequence_size, batch_size, readers_cou
     if limit_duration is not None:
         limit_duration = int(limit_duration)
 
-    from src.dl_pytorch.model import SimpleRNN
+    from src.dl_pytorch import SimpleRNN
     logger.info('Will use PyTorch backend')
 
     with open(os.path.join(log_path, 'model_args.json')) as f:

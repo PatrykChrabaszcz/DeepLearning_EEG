@@ -1,13 +1,13 @@
-from src.hpbandster.worker import Worker
-from src.experiment_arguments import ExperimentArguments
-from src.data_reading.data_reader import SequenceDataReader
-import logging
-import src.data_reading as reader_module
-from src.utils import setup_logging
 from src.hpbandster.bayesian_optimizer import BayesianOptimizer
 from src.hpbandster.config_generator import ConfigGenerator
+from src.data_reading.data_reader import SequenceDataReader
+from src.experiment_arguments import ExperimentArguments
+from src.deep_learning.train_manager import TrainManager
+from src.hpbandster.worker import Worker
+import src.data_reading as reader_module
 import src.hpbandster.budget_decoder
-from src.dl_core.train_manager import TrainManager
+from src.utils import setup_logging
+import logging
 import json
 
 
@@ -56,7 +56,6 @@ class Experiment:
         initial_arguments.get_arguments()
 
         verbose = initial_arguments.verbose
-        setup_logging(logging.DEBUG if verbose else logging.INFO)
 
         self.is_master = initial_arguments.is_master
         self.experiment_type = initial_arguments.experiment_type
@@ -65,13 +64,13 @@ class Experiment:
         backend = initial_arguments.backend.title()
         # Initialize backend (Currently only PyTorch implemented)
         if backend == 'Tensorflow':
-            logger.warning('Tensorflow backend is outdated.')
-            import src.dl_tensorflow.model as model_module
-            from src.dl_tensorflow.model_trainer import ModelTrainer as TrainerClass
+            raise NotImplementedError('Tensorflow part is outdated !')
+            # import src.deep_learning.tensorflow.model as model_module
+            # from src.deep_learning.tensorflow import ModelTrainer as TrainerClass
         elif backend == 'Pytorch':
             logger.info('Will use PyTorch backend.')
-            import src.dl_pytorch.model as model_module
-            from src.dl_pytorch.model_trainer import ModelTrainer as TrainerClass
+            import src.deep_learning.pytorch.models as model_module
+            from src.deep_learning.pytorch.model_trainer import ModelTrainer as TrainerClass
         else:
             raise NotImplementedError('Specify backend as Tensorflow or PyTorch')
 
@@ -91,17 +90,18 @@ class Experiment:
         self.experiment_arguments.add_class_arguments(ConfigGenerator)
         self.experiment_arguments.get_arguments()
 
+        setup_logging(self.experiment_arguments.working_dir, logging.DEBUG if verbose else logging.INFO)
+
         self.train_manager = TrainManager(ModelClass=self.ModelClass, ReaderClass=self.ReaderClass,
                                           TrainerClass=self.TrainerClass,
                                           **self.experiment_arguments.get_arguments())
         self.budget_decoder = self.BudgetDecoderClass(**self.experiment_arguments.get_arguments())
         self.worker = None
 
-        try:
+        if self.experiment_type == self.ExperimentBayesianOptimization:
             self.config_space = ExperimentArguments.read_configuration_space(initial_arguments.config_file)
-        except Exception:
-            logger.warning('Could not find config_space file. '
-                           'It will not be possible to run hyperparameter optimization.')
+        else:
+            self.config_space = None
 
     def run_bayesian_optimization(self):
         """
@@ -132,17 +132,25 @@ class Experiment:
         self.worker.run(background=True if self.is_master else False)
 
     def run_single_train(self):
+        # If user did not specify concrete log folder initialize a new one
+        if self.experiment_arguments.run_log_folder == "":
+            self.experiment_arguments.run_log_folder = self.train_manager.get_unique_dir()
+
         train_metrics = self.train_manager.train(self.experiment_arguments)
-        valid_metrics = self.train_manager.validate(self.experiment_arguments,
-                                                    data_type=SequenceDataReader.Validation_Data)
+        valid_metrics = self.train_manager.validate(self.experiment_arguments, data_type=self.evaluation_data_type)
 
         logger.info('Train Metrics:')
         logger.info(json.dumps(train_metrics.get_summarized_results(), indent=2, sort_keys=True))
-        logger.info('Validation Metrics:')
+        logger.info('%s Metrics:' % self.evaluation_data_type.title())
         logger.info(json.dumps(valid_metrics.get_summarized_results(), indent=2, sort_keys=True))
 
+        return train_metrics, valid_metrics
+
     def run_continuous_train(self):
-        # Will initialize new log_dir at first run
+        # If user did not specify concrete log folder initialize a new one
+        if self.experiment_arguments.run_log_folder == "":
+            self.experiment_arguments.run_log_folder = self.train_manager.get_unique_dir()
+
         while True:
             train_metrics = self.train_manager.train(self.experiment_arguments)
             valid_metrics = self.train_manager.validate(self.experiment_arguments,
@@ -150,7 +158,7 @@ class Experiment:
 
             logger.info('Train Metrics:')
             logger.info(json.dumps(train_metrics.get_summarized_results(), indent=2, sort_keys=True))
-            logger.info('Validation Metrics:')
+            logger.info('%s Metrics:' % self.evaluation_data_type.title())
             logger.info(json.dumps(valid_metrics.get_summarized_results(), indent=2, sort_keys=True))
 
     def run_single_evaluation(self):

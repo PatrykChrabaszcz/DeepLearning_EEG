@@ -43,8 +43,7 @@ class AnomalyDataReader(SequenceDataReader):
 
     normalization_none = 'none'
     normalization_separate = 'separate'
-    normalization_full = 'full'
-    normalization_types = [normalization_none, normalization_separate, normalization_full]
+    normalization_types = [normalization_none, normalization_separate]
 
     class ExampleInfo(SequenceDataReader.SequenceExampleInfo):
         def __init__(self, info_dict, label_type, offset_size=0, random_mode=0, limit_duration=None,
@@ -71,36 +70,35 @@ class AnomalyDataReader(SequenceDataReader):
             else:
                 raise NotImplementedError('Can not create context for this label_type %s' % label_type)
 
-            self.aug_shift = np.zeros_like(self.mean, dtype=np.float32)
-            self.aug_scale = np.ones_like(self.std, dtype=np.float32)
-
         def reset(self, sequence_size):
             super().reset(sequence_size)
-            if self.use_augmentation:
-                self.new_scale_shift()
-            # Reset augmentation scale and shift
 
-        def new_scale_shift(self):
-            self.aug_shift = np.random.normal(scale=0.25, size=self.mean.shape).astype(np.float32)
-            self.aug_scale = np.random.uniform(0.5, 2, size=self.std.shape).astype(np.float32)
+        # Scale from 0.5 to 2.0
+        @staticmethod
+        def random_scale():
+            r = random.uniform(-1, 1)
+            return 2**r
 
         def get_length(self):
             return self.length
 
         def read_data(self, serialized):
             index, sequence_size = serialized
-            data = self.file_handler.get_data(None, index, index + sequence_size).astype(np.float32)
+            data = self.file_handler.get_data(None, index, index+ sequence_size).astype(np.float32)
             data = np.transpose(data)
 
             # Now data has shape time x features
 
-            # if self.random_mode == 2:
-            #     self.new_scale_shift()
-            #     chance = random.choice([0, 1])
-            #     if chance == 1:
-            #         data = data[::-1, :]
-            # data = data[::-1, :]
-            data = ((data - self.mean) / self.std) * self.aug_scale + self.aug_shift
+            # Normalize
+            data = ((data - self.mean) / self.std)
+
+            # Rescale by random value from log_uniform (0.5, 2) and revert in time with 50% chance
+            if self.use_augmentation:
+                data *= self.random_scale()
+
+                revert = random.choice([0, 1])
+                if revert:
+                    data = data[::-1, :]
 
             # Time might be needed for some advanced models like PhasedLSTM
             time = np.reshape(np.arange(index, index + sequence_size), newshape=[sequence_size, 1])
@@ -119,12 +117,15 @@ class AnomalyDataReader(SequenceDataReader):
         parser.add_argument("use_augmentation", type=int, choices=[0, 1], default=0,
                             help="Will add some shift and rescale the data."
                                  "Idea is to make the network invariant to those transformations")
+        parser.add_argument("filter_gender", type=str, choices=['None', 'M', 'F'], default='None',
+                            help="Will train using only male of female ")
         return parser
 
-    def _initialize(self, label_type, normalization_type, use_augmentation, **kwargs):
+    def _initialize(self, label_type, normalization_type, use_augmentation, filter_gender, **kwargs):
         self.label_type = label_type
         self.normalization_type = normalization_type
         self.use_augmentation = use_augmentation
+        self.filter_gender = filter_gender
 
         if use_augmentation and self.data_type != SequenceDataReader.Train_Data:
             logger.warning('For Validation and Test we disable data augmentation')
@@ -152,25 +153,6 @@ class AnomalyDataReader(SequenceDataReader):
 
         return info_dicts
 
-    def _compute_full_normalization(self):
-        logger.debug('Find normalization statistics for the full train dataset')
-        info_dicts = self.load_info_dicts(self.data_path, 'train')
-        start = int(self.cv_k / self.cv_n * len(info_dicts))
-        end = int((self.cv_k + 1) / self.cv_n * len(info_dicts))
-
-        train_info_dicts = info_dicts[:start] + info_dicts[end:]
-
-        mean_list = []
-        std_list = []
-        for info_dict in train_info_dicts:
-            mean_list.append(np.array(info_dict['mean'], dtype=np.float32))
-            std_list.append(np.square(np.array(info_dict['std'], dtype=np.float32)))
-
-        mean = np.mean(mean_list, axis=0)
-        std = np.sqrt(np.mean(std_list, axis=0))
-
-        return mean, std
-
     def _create_examples(self):
         if self.normalization_type != self.normalization_none:
             if self.limit_duration != None:
@@ -190,6 +172,11 @@ class AnomalyDataReader(SequenceDataReader):
 
         # Load data into dictionaries from the info json files
         info_dicts = self.load_info_dicts(self.data_path, folder_name)
+
+        # Filter out based on the gender if that is what user wants
+        if self.filter_gender in ['M', 'F']:
+            logger.warning('Will only use recordings with gender: %s' % self.filter_gender)
+            info_dicts = [info_dict for info_dict in info_dicts if info_dict['gender'] == self.filter_gender]
 
         # Find out what are the names of unique labels
         labels = list(set([info_dict[self.label_type] for info_dict in info_dicts]))
@@ -218,18 +205,11 @@ class AnomalyDataReader(SequenceDataReader):
             else:
                 info_dicts = validation_info_dicts
 
-        # Apply proper normalization
-        if self.normalization_type == self.normalization_full:
-            logger.debug('Will normalize using full training dataset.')
-            mean, std = self._compute_full_normalization()
-            for info_dict in info_dicts:
-                info_dict['mean'] = mean
-                info_dict['std'] = std
-        elif self.normalization_type == self.normalization_none:
+        if self.normalization_type == self.normalization_none:
             logger.debug('Will not normalize the data.')
             for info_dict in info_dicts:
-                info_dict['mean'] = np.zeros_like(np.array(info_dict['mean'], dtype=np.float32))
-                info_dict['std'] = np.ones_like(np.array(info_dict['std'], dtype=np.float32))
+                info_dict['mean'] = 0.0
+                info_dict['std'] = 1.0
         elif self.normalization_type == self.normalization_separate:
             logger.debug('Will normalize each recording separately.')
         else:
@@ -266,7 +246,7 @@ class AnomalyDataReader(SequenceDataReader):
 
     @staticmethod
     def input_size(**kwargs):
-        return 22
+        return 21
 
     @staticmethod
     def output_size(**kwargs):

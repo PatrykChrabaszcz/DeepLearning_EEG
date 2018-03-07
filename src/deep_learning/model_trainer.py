@@ -1,9 +1,16 @@
 from src.data_reading.data_reader import SequenceDataReader
-from src.dl_core.metrics import create_metrics
+from src.deep_learning.metrics import ClassificationMetrics, RegressionMetrics, SimpleLossMetrics
 from time import time as get_time
 from src.utils import Stats
 import logging
 logger = logging.getLogger(__name__)
+
+
+metrics_dict = {
+    'ClassificationMetrics': ClassificationMetrics,
+    'SimpleLossMetrics': SimpleLossMetrics,
+    'RegressionMetrics': RegressionMetrics
+}
 
 
 class ModelTrainerBase:
@@ -18,6 +25,16 @@ class ModelTrainerBase:
             self.start_time = get_time()
             self.iteration = 0
             self.epoch = 0
+
+        def get_progress(self):
+            if self.budget_type == 'minute':
+                return min(1.0, ((get_time() - self.start_time) / 60) / self.budget)
+            elif self.budget_type == 'iteration':
+                return self.iteration / self.budget
+            elif self.budget_type == 'epoch':
+                return self.epoch / self.budget
+            else:
+                raise RuntimeError('Budget Type %s not available' % self.budget_type)
 
         def check_after_iteration_done(self):
             self.iteration += 1
@@ -49,22 +66,26 @@ class ModelTrainerBase:
 
     budget_types = ['epoch', 'iteration', 'minute']
 
-    def __init__(self, model, lr, l2_decay, objective_type, budget, budget_type,
-                 optimizer, cosine_restarts_decay, **kwargs):
+    def __init__(self, model, lr, gradient_clip, l2_decay, objective_type, budget, budget_type,
+                 optimizer, cosine_decay, metrics_class, **kwargs):
         self.model = model
         self.learning_rate = lr
+        self.gradient_clip = gradient_clip
         self.weight_decay = l2_decay
         self.objective_type = objective_type
         self.budget = budget
         self.budget_type = budget_type
         self.optimizer = optimizer
-        self.cosine_restarts_decay = cosine_restarts_decay
+        self.cosine_decay = cosine_decay
+        self.metrics_class = metrics_dict[metrics_class]
 
     @staticmethod
     def add_arguments(parser):
         parser.section('model_trainer')
         parser.add_argument("lr", type=float, default=0.001,
                             help="Learning rate used for training.")
+        parser.add_argument("gradient_clip", type=float, default=0.25,
+                            help="Gradient cliping value.")
         parser.add_argument("l2_decay", type=float, default=0.0,
                             help="L2 regularization coefficient.")
         parser.add_argument("objective_type", type=str,
@@ -81,9 +102,10 @@ class ModelTrainerBase:
         parser.add_argument("optimizer", type=str, choices=['Adam', 'AdamW', 'SGD'],
                             default='AdamW',
                             help="Optimizer that is used to update the weights.")
-        parser.add_argument("cosine_restarts_decay", type=int, choices=[0, 1],
+        parser.add_argument("cosine_decay", type=int, choices=[0, 1],
                             default=0,
                             help="If set to 1 then will use cosine decay learning rate schedule with restarts.")
+        parser.add_argument("metrics_class", type=str, choices=metrics_dict.keys(), help="TODO")
         return parser
 
     def run(self, data_reader, train=True):
@@ -93,9 +115,7 @@ class ModelTrainerBase:
         process_metrics_stats = time_stats.create_child_stats('Process Metrics')
         save_states_stats = time_stats.create_child_stats('Save States')
 
-        metrics = create_metrics(name=data_reader.data_type,
-                                 objective_type=self.objective_type,
-                                 output_size=data_reader.output_size())
+        metrics = self.metrics_class(name=data_reader.data_type, output_size=self.model.output_size)
 
         stop_run = ModelTrainerBase.StopRun(self.budget_type, self.budget, train=train)
 
@@ -119,7 +139,8 @@ class ModelTrainerBase:
                             with one_iteration_stats:
                                 outputs, hidden, loss = self._one_iteration(batch=batch, time=time, hidden=hidden,
                                                                             labels=labels, context=contexts,
-                                                                            update=train)
+                                                                            update=train,
+                                                                            progress=stop_run.get_progress())
                             with process_metrics_stats:
                                 self._gather_results(ids, outputs, labels, loss, batch_size=len(batch), metrics=metrics)
 
@@ -151,7 +172,7 @@ class ModelTrainerBase:
                 # This exception should be caught by a worker and reported to the BO optimizer
                 raise e
 
-    def _one_iteration(self, batch, time, hidden, labels, context, update=False):
+    def _one_iteration(self, batch, time, hidden, labels, context, update=False, progress=0.0):
         raise NotImplementedError
 
     def _gather_results(self, ids, outputs, labels, loss, batch_size, metrics):

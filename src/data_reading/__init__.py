@@ -2,3 +2,4 @@ from src.data_reading.data_reader import SequenceDataReader
 from src.data_reading.anomaly_data_reader import AnomalyDataReader
 from src.data_reading.finger_data_reader import FingerDataReader
 from src.data_reading.mnist_data_reader import MnistDataReader
+from src.data_reading.wikitext_reader import WikiTextReader

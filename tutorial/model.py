@@ -1,11 +1,7 @@
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
 from torch.autograd import Variable
-from src.dl_core.model import ModelBase
-from torch import optim
 import numpy as np
-import math, random
 
 
 class TutorialRNN(nn.Module):
