@@ -6,7 +6,6 @@ from src.deep_learning.pytorch.optimizer import AdamW, CosineScheduler, Schedule
 import logging
 from src.deep_learning.metrics import SimpleLossMetrics
 
-
 logger = logging.getLogger(__name__)
 
 criterion_dict = {
@@ -79,10 +78,14 @@ class ModelTrainer(ModelTrainerBase):
             if isinstance(hidden, tuple):
                 hidden = tuple(h.cuda() for h in hidden)
             else:
-                hidden = hidden.cuda()
+                try:
+                    hidden = hidden.cuda()
+                except AttributeError:
+                    hidden = [h.cuda() for h in hidden]
             if self.model.context_size > 0:
                 context = context.cuda()
 
+        batch = self.model.lasso(batch)
         outputs, hidden = self.model(batch, hidden, context)
 
         if '_last' in self.objective_type:
@@ -96,6 +99,7 @@ class ModelTrainer(ModelTrainerBase):
             raise NotImplementedError
 
         loss = self.criterion(training_outputs, training_labels)
+        loss = self.model.add_lasso_loss(loss)
 
         if update:
             self.optimizer.zero_grad()

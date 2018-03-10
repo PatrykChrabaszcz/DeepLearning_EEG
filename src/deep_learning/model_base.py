@@ -1,4 +1,5 @@
 class ModelBase:
+
     cell_types = ['LSTM', 'PhasedLSTM', 'GRU', 'QRNN', 'LayerNormLSTM', 'BNLSTM', 'BNGRU']
 
     def offset_size(self, sequence_size):

@@ -106,6 +106,7 @@ class ModelTrainerBase:
                             default=0,
                             help="If set to 1 then will use cosine decay learning rate schedule with restarts.")
         parser.add_argument("metrics_class", type=str, choices=metrics_dict.keys(), help="TODO")
+
         return parser
 
     def run(self, data_reader, train=True):
