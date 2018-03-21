@@ -42,7 +42,7 @@ class FingerDataReader(SequenceDataReader):
         # We need to overwrite this method, all examples read from the same array, we need to read from a
         # completely different points within the sequence
         def reset(self, sequence_size, randomize=False):
-            super().reset(sequence_size, randomize)
+            super().reset(sequence_size)
 
             # Additional behaviour (overwrite the self.curr_index with random point in the file (not just a phase)
             if randomize and not self.done:
@@ -52,9 +52,9 @@ class FingerDataReader(SequenceDataReader):
     @staticmethod
     def add_arguments(parser):
         SequenceDataReader.add_arguments(parser)
-        parser.add_argument("--subject", type=int, dest='subject', choices=[1, 2, 3], default=1,
+        parser.add_argument("subject", type=int,choices=[1, 2, 3], default=1,
                             help="Number of the patient.")
-        parser.add_argument('--fingers', nargs='+', required=True, default=[0, 1, 2, 4], type=int,
+        parser.add_argument('fingers', nargs='+', default=[0, 1, 2, 4], type=int,
                             help="Which fingers will be used")
         return parser
 
@@ -116,11 +116,6 @@ class FingerDataReader(SequenceDataReader):
                                                            labels_shape, offset_size=self.offset_size,
                                                            random_mode=self.random_mode)
                               for i in range(number_of_examples)])
-
-        # Additional data structure for faster access
-        for class_examples in self.examples:
-            for example in class_examples:
-                self.examples_dict[example.example_id] = example
 
     @staticmethod
     def context_size(**kwargs):

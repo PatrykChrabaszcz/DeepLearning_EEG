@@ -13,10 +13,49 @@ logger = logging.getLogger(__name__)
 
 
 class ExperimentArguments(object):
+    """
+    Class that extracts arguments declared by different classes used for the experiment run.
+    Priority in which arguments are assigned, from the lowest:
+    1. Default parameters specified in class declaration.
+    2. Parameters provided by the user in the .ini file
+    3. Parameters provided by the user as CLI arguments
+    4. Parameters specified by the Architecture Optimizer.
 
-    # We want to extend standard ArgumentParser with sections
-    # Maybe there is a better approach for that
+    Parsing arguments requires couple stages and might look complicated.
+    This class makes it possible to achieve our goals:
+        - First we need to extract the location of .ini file from the CLI arguments
+        - Using .ini file we need to overwrite default script arguments
+        - Based on a subset of script arguments we determine which subclasses are used for the experiment.
+          For example which DataReader is used.
+        - Then we add arguments required by those classes to the parser and again process all CLI arguments
+          asserting that all options were recognized and are correct.
+
+    Args:
+        sections: If not None then only specified .ini file sections will be parsed
+        use_all_cli_args: If true then will assert that all CLI arguments were processed successfully.
+            This detects situations when user thinks that given argument will be used but it is not.
+    """
+
     class ExperimentArgumentsParser:
+        """
+        Extends standard Argument parser by adding sections. When adding new arguments, we need to set section parameter
+        first. For example, when adding DataReader arguments, section should be set to "data_reader".
+        Parsed arguments will be returned as a dictionary args_dict[section][arg_name].
+        This class was introduced to provide a functionality required to update the .ini file with BaysianOptimizer
+        arguments or user provided or CLI arguments. Updated .ini file is saved together with the logs in the
+        working_dir. It can be later used to restore the model and continue training or perform an evaluation.
+        Maybe there is a better/standard approach to get the same functionality (?).
+
+        Args:
+            use_all_cli_args: If True then it will assert that all CLI arguments were processed successfully.
+                If one of our arguments determines what other arguments are available, then this property becomes
+                useful. It might be the case that we are not able to process all cli args before we find out
+                what arguments are needed. For example, first we might read from .ini for from CLI arguments,
+                which subclass is used for the DataReader and then add arguments from that class to the available
+                options. During the second pass we will already know all available arguments, and we might want to
+                assert that all of the CLI arguments provided by the user are actually available in the script.
+                This way we eliminate one source of possible mistakes.
+        """
         def __init__(self, use_all_cli_args=True):
             self.use_all_cli_args = use_all_cli_args
             self._parser = ArgumentParser(allow_abbrev=False)
@@ -28,17 +67,37 @@ class ExperimentArguments(object):
             self._args = {}
 
         def section(self, section):
+            """
+            Sets the current sections. All arguments added after a call to this function will be assigned to a
+            given section
+            Args:
+                section: Name of the section to be used, if None then the next call to add_argument will throw an
+                    assertion error.
+            """
             self.current_section = section
             if section not in self._args.keys():
                 self._args[section] = {}
 
         def add_argument(self, name, **kwargs):
+            """
+            Extends ArgumentParser add_argument(...) function by assigning it to the most recently specified section.
+            Args:
+                name: Name of the argument.
+                kwargs: Arguments forwarded to the internal ArgumentParser object
+            """
             assert self.current_section is not None, 'You need to specify arguments section'
             assert name not in self._name_to_section.keys(), 'Argument %s already exists' % name
             self._name_to_section[name] = self.current_section
             self._parser.add_argument('--%s' % name, **kwargs)
 
         def parse(self, unknown_args):
+            """
+            Extracts CLI arguments from unknown_args. If class object was initialized with use_all_cli_args=True
+            then it will make sure that all CLI arguments were declared in the script, otherwise it will throw an
+            exception.
+            :param unknown_args: CLI args to be processed. Those are returned by the first parser which only finds
+                .ini file location.
+            """
             args_dict = deepcopy(self._args)
             args, unknown_args = self._parser.parse_known_args(unknown_args)
             if self.use_all_cli_args:
@@ -54,21 +113,15 @@ class ExperimentArguments(object):
             return args_dict
 
         def update_defaults(self, **kwargs):
+            """
+            This function is used to update default arguments that are specified in the script (for an example look
+            at SequenceDataReader class) with arguments from the .ini file, which have a higher priority.
+            Args:
+                kwargs: Arguments forwarded to the internal ArgumentParser object
+            """
             self._parser.set_defaults(**kwargs)
 
     def __init__(self, sections=None, use_all_cli_args=True):
-        """
-        Class used to extract arguments declared by different classes used for the run.
-        Where possible default arguments are provided.
-        Priority in which arguments are assigned, from the lowest:
-        1. Default parameters specified in class declaration.
-        2. Parameters provided by the user in the .ini file
-        3. Parameters provided by the user as CLI arguments
-        4. Parameters specified by Architecture Optimizer.
-
-        :param sections: If not None then only specified .ini file sections will be used
-        :param use_all_cli_args: If true then will assert that all CLI arguments were processed successfully.
-        """
 
         self._sections = sections
         self._ini_conf = None
@@ -84,8 +137,9 @@ class ExperimentArguments(object):
         """
         Save internal .ini file with all updates done to it (CLI arguments, ConfigSpace updates)
         to make it possible to restore experiment with parameters used for training.
-        :param file_path: path to the output file
-        :return
+        Args:
+            file_path: path to the output .ini file
+
         """
         with open(file_path, 'w') as config_file:
             print(self._ini_conf)
@@ -96,9 +150,10 @@ class ExperimentArguments(object):
         """
         Load ConfigSpace object from .pcs (parameter configuration space) file.
         Throws an exception if file is not available.
-
-        :param file_path: Path to the .pcs file.
-        :return: ConfigSpace object representing configuration space.
+        Args:
+            file_path: Path to the .pcs file.
+        Returns:
+            ConfigSpace object representing configuration space.
         """
 
         with open(file_path, 'r') as f:
@@ -110,9 +165,6 @@ class ExperimentArguments(object):
         """
         Adds arguments specified in the class 'class_type' to the internal Argument Parser object.
         This function should be called sequentially for all classes used in the experiment.
-
-
-        :return:
         """
         if self._arguments is not None:
             raise RuntimeError('Arguments already parsed!')
@@ -123,14 +175,15 @@ class ExperimentArguments(object):
     def get_arguments(self):
         """
         Gets a dictionary with parsed arguments.
-        Argument source priority (highest first):
-        1. CLI arguments provided by the user
-        2. Arguments provided in the ini_file
-        3. Defaults defined in the code
+        Argument source priority from the lowest:
+        1. Defaults defined in the code
+        2. Arguments provided in .ini file
+        3. CLI arguments provided by the user
 
+        Updates internal .ini object which can be saved using save_to_file() function.
 
-        :return: Dictionary with arguments
-
+        Returns:
+            Dictionary with script arguments, removes section information making it 1 level deep: arg_dict[argument].
         """
         if self._arguments is not None:
             return self._arguments
@@ -147,7 +200,7 @@ class ExperimentArguments(object):
             assert os.path.isfile(ini_file), 'Could not find specified (%s) ini file' % ini_file
 
             logger.debug('Updating default parameter values from file: %s' % ini_file)
-            self._ini_conf.read(args.ini_file)
+            self._ini_conf.read(ini_file)
 
             # Filtered sections if needed or all sections from the ini file
 
@@ -185,17 +238,20 @@ class ExperimentArguments(object):
 
     def updated_with_configuration(self, configuration):
         """
-        Will copy current parameters and update them based on configuration space.
-        Configuration space can come from hyper-parameter optimizer.
-        Does not modify original parameters!
-
-        :param configuration: Configuration object (from ConfigSpace library)
-        :return: Dictionary with updated arguments
+        Will copy current parameters and update this copy based on the configuration object.
+        Configuration object can come from the Architecture Search optimizer.
+        Note:
+            Does not modify original parameters! Multiple calls with different configurations will alter original
+            parameters.
+        Args:
+            configuration: Configuration object (from ConfigSpace library).
+        Returns:
+            Dictionary with updated arguments, same structure as dictionary returned by get_arguments(..).
         """
 
         arguments = self.copy()
         for arg_name in configuration.keys():
-            new_arg_value = configuration[arg_name]
+            new_arg_value = type(arguments[arg_name])(configuration[arg_name])
             old_arg_value = arguments[arg_name]
             logger.debug('Changing %s from %s to %s' % (arg_name, old_arg_value, new_arg_value))
             arguments[arg_name] = new_arg_value
@@ -203,6 +259,12 @@ class ExperimentArguments(object):
         return arguments
 
     def copy(self):
+        """
+        Makes a deep copy of already parsed arguments.
+        Copies internal _arguments dictionary and .ini file object.
+        Returns:
+            Deep copy of this object
+        """
         assert self._ini_conf is not None and self._arguments is not None, 'Can only copy initialized arguments!'
 
         experiment_arguments = ExperimentArguments()
@@ -217,6 +279,8 @@ class ExperimentArguments(object):
 
         return experiment_arguments
 
+    # Function below allow direct access to the internal _arguments dictionary. It simplifies the code that
+    # uses objects of this class. Note that it also updates internal .ini object whenever any argument is updated.
     def __getattr__(self, item):
         if item[0] == '_':
             return super().__getattribute__(item)

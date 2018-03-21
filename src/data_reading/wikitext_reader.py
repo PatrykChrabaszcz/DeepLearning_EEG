@@ -76,11 +76,6 @@ class WikiTextReader(SequenceDataReader):
         logger.warning('For WikiText dataset separate validation set is provided, '
                        'currently cv_n and cv_k settings have no effect!')
 
-        # Additional data structure for faster access
-        for class_examples in self.examples:
-            for example in class_examples:
-                self.examples_dict[example.example_id] = example
-
     @staticmethod
     # Has to be a static method, context_size is required when creating the model,
     # DataReader can't be instantiated properly before the model is created

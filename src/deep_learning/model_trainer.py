@@ -1,16 +1,10 @@
 from src.data_reading.data_reader import SequenceDataReader
-from src.deep_learning.metrics import ClassificationMetrics, RegressionMetrics, SimpleLossMetrics
+import src.result_processing as metrics_module
 from time import time as get_time
 from src.utils import Stats
 import logging
+
 logger = logging.getLogger(__name__)
-
-
-metrics_dict = {
-    'ClassificationMetrics': ClassificationMetrics,
-    'SimpleLossMetrics': SimpleLossMetrics,
-    'RegressionMetrics': RegressionMetrics
-}
 
 
 class ModelTrainerBase:
@@ -66,18 +60,19 @@ class ModelTrainerBase:
 
     budget_types = ['epoch', 'iteration', 'minute']
 
-    def __init__(self, model, lr, gradient_clip, l2_decay, objective_type, budget, budget_type,
+    def __init__(self, model, lr, gradient_clip, weight_decay, l2_decay, objective_type, budget, budget_type,
                  optimizer, cosine_decay, metrics_class, **kwargs):
         self.model = model
         self.learning_rate = lr
         self.gradient_clip = gradient_clip
-        self.weight_decay = l2_decay
+        self.weight_decay = weight_decay
+        self.l2_decay = l2_decay
         self.objective_type = objective_type
         self.budget = budget
         self.budget_type = budget_type
         self.optimizer = optimizer
         self.cosine_decay = cosine_decay
-        self.metrics_class = metrics_dict[metrics_class]
+        self.metrics_class = getattr(metrics_module, metrics_class)
 
     @staticmethod
     def add_arguments(parser):
@@ -86,8 +81,11 @@ class ModelTrainerBase:
                             help="Learning rate used for training.")
         parser.add_argument("gradient_clip", type=float, default=0.25,
                             help="Gradient cliping value.")
+        parser.add_argument("weight_decay", type=float, default=0.0,
+                            help="AdamW weight decay.")
         parser.add_argument("l2_decay", type=float, default=0.0,
                             help="L2 regularization coefficient.")
+
         parser.add_argument("objective_type", type=str,
                             choices=ModelTrainerBase.objective_types,
                             default='CrossEntropy_last',
@@ -99,13 +97,13 @@ class ModelTrainerBase:
                             choices=ModelTrainerBase.budget_types,
                             help="Type of the training budget.")
 
-        parser.add_argument("optimizer", type=str, choices=['Adam', 'AdamW', 'SGD'],
-                            default='AdamW',
+        parser.add_argument("optimizer", type=str, choices=['ExtendedAdam', 'SGD'],
+                            default='ExtendedAdam',
                             help="Optimizer that is used to update the weights.")
         parser.add_argument("cosine_decay", type=int, choices=[0, 1],
                             default=0,
                             help="If set to 1 then will use cosine decay learning rate schedule with restarts.")
-        parser.add_argument("metrics_class", type=str, choices=metrics_dict.keys(), help="TODO")
+        parser.add_argument("metrics_class", type=str, help="TODO")
 
         return parser
 
@@ -143,7 +141,7 @@ class ModelTrainerBase:
                                                                             update=train,
                                                                             progress=stop_run.get_progress())
                             with process_metrics_stats:
-                                self._gather_results(ids, outputs, labels, loss, batch_size=len(batch), metrics=metrics)
+                                self._gather_results(ids, outputs, labels, loss, metrics=metrics)
 
                             with save_states_stats:
                                 data_reader.set_states(ids, self.model.export_state(hidden))
@@ -167,14 +165,18 @@ class ModelTrainerBase:
                             data_reader.stop_readers()
                             return metrics
 
-            except (Exception, KeyboardInterrupt) as e:
-                logger.warning('Exception detected, trying to stop training readers ...')
+            except KeyboardInterrupt as e:
+                logger.warning('Keyboard Interrupt in Model Trainer')
                 data_reader.stop_readers()
-                # This exception should be caught by a worker and reported to the BO optimizer
-                raise e
+                return metrics
+            except Exception as e:
+                logger.warning('Unexpected exception in Model Trainer %s' % e)
+                data_reader.stop_readers()
+                return metrics
+
 
     def _one_iteration(self, batch, time, hidden, labels, context, update=False, progress=0.0):
         raise NotImplementedError
 
-    def _gather_results(self, ids, outputs, labels, loss, batch_size, metrics):
+    def _gather_results(self, ids, outputs, labels, loss, metrics):
         raise NotImplementedError

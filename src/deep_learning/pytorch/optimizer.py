@@ -4,9 +4,10 @@ from torch.optim.optimizer import Optimizer
 import numpy as np
 
 
-class AdamW(Optimizer):
-    """Implements AdamW algorithm.
-    It has been proposed in `Adam: A Method for Stochastic Optimization`_.
+#
+class ExtendedAdam(Optimizer):
+    """Implements a combination of Adam and AdamW algorithm.
+    It has been proposed in `Adam: A Method for Stochastic Optimization`.
     Arguments:
         params (iterable): iterable of parameters to optimize or dicts defining
             parameter groups
@@ -17,6 +18,7 @@ class AdamW(Optimizer):
             numerical stability (default: 1e-8)
         weight_decay (float, optional): weight decay using the method from
             the paper `Fixing Weight Decay Regularization in Adam` (default: 0)
+        l2_decay (float, optional): weight decay using standard Adam (default: 0)
         amsgrad (boolean, optional): whether to use the AMSGrad variant of this
             algorithm from the paper `On the Convergence of Adam and Beyond`_
     .. _Adam\: A Method for Stochastic Optimization:
@@ -28,10 +30,10 @@ class AdamW(Optimizer):
     """
 
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
-                 weight_decay=0, amsgrad=False):
+                 weight_decay=0, l2_decay=0, amsgrad=False):
         defaults = dict(lr=lr, betas=betas, eps=eps,
-                        weight_decay=weight_decay, amsgrad=amsgrad)
-        super(AdamW, self).__init__(params, defaults)
+                        weight_decay=weight_decay, l2_decay=l2_decay, amsgrad=amsgrad)
+        super().__init__(params, defaults)
 
     def step(self, closure=None):
         """Performs a single optimization step.
@@ -71,6 +73,8 @@ class AdamW(Optimizer):
                 beta1, beta2 = group['betas']
 
                 state['step'] += 1
+                if group['l2_decay'] != 0:
+                    grad = grad.add(group['l2_decay'], p.data)
 
                 # Decay the first and second moment running average coefficient
                 exp_avg.mul_(beta1).add_(1 - beta1, grad)
@@ -111,28 +115,26 @@ class CosineScheduler:
             group.setdefault('initial_weight_decay', group['weight_decay'])
 
     # Starting from epoch 0
-    def step(self, progress, decay_wd):
+    def step(self, progress):
         assert 0.0 <= progress <= 1.0
         decay = 0.5 * (1.0 + np.cos(np.pi * progress))
 
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = param_group['initial_lr'] * decay
-            if decay_wd:
-                param_group['weight_decay'] = param_group['initial_weight_decay'] * decay
+            param_group['weight_decay'] = param_group['initial_weight_decay'] * decay
 
 
 # Set scheduler to CosineScheduler if you want to use cosine annealing
 # Set decay_wd to True if you use AdamW
 class ScheduledOptimizer(object):
-    def __init__(self, optimizer, scheduler=None, decay_wd=False):
+    def __init__(self, optimizer, scheduler=None):
         self.scheduler = scheduler
         self.optimizer = optimizer
-        self.decay_wd = decay_wd
 
     # Use progress to derive cosine phase
     def step(self, progress):
         if self.scheduler is not None:
-            self.scheduler.step(progress, self.decay_wd)
+            self.scheduler.step(progress)
         self.optimizer.step()
 
     def state_dict(self):

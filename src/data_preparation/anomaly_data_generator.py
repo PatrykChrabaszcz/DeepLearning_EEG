@@ -15,10 +15,13 @@ log = logging.getLogger()
 
 class DataGenerator:
     """
-    Applies preprocessing to the data.
-    Extracts Train/Validation and Test datasets.
-    Handles different channel order for different files
-    Cache data
+    Class used to generate preprocessed abnormal/normal recordings.
+        - Subsamples recordings to desired frequency
+        -
+        Original raw recordings will be sub-sampled to have
+    the same frequency specified by the user (default 100). Specified number of seconds will be removed both from
+    the beginning and from the end of each recording. Reach output recording will be also limited to specified
+    duration.
     """
     wanted_electrodes = {
         'EEG': ['EEG A1-REF', 'EEG A2-REF', 'EEG C3-REF', 'EEG C4-REF', 'EEG CZ-REF', 'EEG F3-REF', 'EEG F4-REF',
@@ -103,7 +106,7 @@ class DataGenerator:
             # txt_file_path = file_path[:-8] + '.txt'
 
     def __init__(self, data_path, cache_path, secs_to_cut, sampling_freq, duration_mins, max_abs_value, use_ekg,
-                 version='v1.1.2'):
+                 subsample_filter='kaiser_fast', version='v1.1.2'):
         """
         :param data_path:
             Path to the original data
@@ -115,6 +118,7 @@ class DataGenerator:
         self.data_path = data_path
         self.cache_path = cache_path
         self.use_ekg = use_ekg
+        self.subsample_filter = subsample_filter
         self.version = version
 
         self.secs_to_cut_at_start_end = secs_to_cut
@@ -205,8 +209,9 @@ class DataGenerator:
         if self.duration_mins > 0:
             preprocessing_functions.append(lambda data, fs: (data[:, :int(self.duration_mins * 60 * fs)], fs))
 
-        preprocessing_functions.append(lambda data, fs: (resampy.resample(data, fs, self.sampling_freq, axis=1,
-                                                                          filter='kaiser_fast'), self.sampling_freq))
+        preprocessing_functions.append(lambda data, fs:
+                                       (resampy.resample(data, sr_orig=fs, sr_new=self.sampling_freq, axis=1,
+                                                         filter=self.subsample_filter), self.sampling_freq))
         if self.max_abs_value > 0:
             preprocessing_functions.append(lambda data, fs: (
                 np.clip(data, -self.max_abs_value, self.max_abs_value), fs))
@@ -235,6 +240,7 @@ class DataGenerator:
             os.makedirs(output_data_dir, exist_ok=True)
             os.makedirs(output_info_dir, exist_ok=True)
 
+            # Could be parallelized in the future
             for i, file in enumerate(split_files):
                 try:
                     sensor_types = ('EEG', 'EKG1') if self.use_ekg else ('EEG',)
@@ -266,23 +272,27 @@ class DataGenerator:
 @click.command()
 @click.option('--data_path', type=click.Path(exists=True), required=True)
 @click.option('--cache_path', type=click.Path(), required=True)
-@click.option('--secs_to_cut', default=120, help='How many seconds are removed from the beginning and end of recording.')
+@click.option('--secs_to_cut', default=60, help='How many seconds are removed from the beginning/end of the recording.')
 @click.option('--sampling_freq', default=100.0, help='Signal will be preprocessed to the desired frequency.')
-@click.option('--duration_min', default=0, help='Duration of the recording.')
+@click.option('--duration_mins', default=0, help='Duration of the recording.')
 @click.option('--max_abs_value', default=800, help='Clip if channel value is grater than max_abs_value')
 @click.option('--use_ekg', default=0, type=int, help='Clip if channel value is grater than max_abs_value')
-def main(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value, use_ekg):
+@click.option('--subsample_filter', default='kaiser_fast', type=click.Choice(['kaiser_fast', 'kaiser_best']),
+              help='Use kaiser_best for high quality or kaiser_fast for fast computation.')
+def main(data_path, cache_path, secs_to_cut, sampling_freq, duration_mins, max_abs_value, use_ekg, subsample_filter):
     print('Settings:')
     print('Data path: %s' % data_path)
     print('Cache path: %s' % cache_path)
     print('Seconds to cut (beginning and end): %d' % secs_to_cut)
     print('Sampling frequency: %d' % sampling_freq)
-    print('Duration of the recording: %d' % duration_min)
+    print('Duration of the recording: %d' % duration_mins)
     print('Maximum absolute value: %g' % max_abs_value)
     print('Use EKG set to: %d' % use_ekg)
+    print('subsample_filter set to: %s' % subsample_filter)
 
-    data_generator = DataGenerator(data_path, cache_path, secs_to_cut, sampling_freq, duration_min, max_abs_value,
-                                   use_ekg)
+    data_generator = DataGenerator(data_path=data_path, cache_path=cache_path, secs_to_cut=secs_to_cut,
+                                   sampling_freq=sampling_freq, duration_mins=duration_mins, max_abs_value=max_abs_value,
+                                   use_ekg=use_ekg, subsample_filter=subsample_filter)
     data_generator.prepare()
 
 

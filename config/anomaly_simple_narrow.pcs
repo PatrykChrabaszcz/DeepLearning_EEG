@@ -1,0 +1,9 @@
+# Model
+rnn_normalization categorical {none, layer_norm} [none]
+rnn_dilation categorical {1, 2} [1]
+rnn_hidden_size integer [8, 128] [32] log
+
+
+# Training
+sequence_size ordinal {128, 256, 512, 1024, 2048, 4096} [512]
+

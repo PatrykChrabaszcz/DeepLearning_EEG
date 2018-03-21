@@ -8,11 +8,11 @@ results/
 models/
 results/
 Benchmark_04_03/
-
+check_stuff/
 tutorial/data/
 tutorial/logs/
 tutorial/models
-
+meta*/
 
 
 # Byte-compiled / optimized / DLL files

@@ -36,10 +36,11 @@ logger = logging.getLogger(__name__)
 # Cast all prediction problems (all label_types) as  classification problem
 
 class AnomalyDataReader(SequenceDataReader):
-    label_age = 'age_class'
-    label_anomaly = 'anomaly'
-    label_gender = 'gender_class'
-    label_types = [label_age, label_anomaly, label_gender]
+    label_age = 'age'
+    label_age_class = 'age_class'
+    label_anomaly_class = 'anomaly'
+    label_gender_class = 'gender_class'
+    label_types = [label_age, label_age_class, label_anomaly_class, label_gender_class]
 
     normalization_none = 'none'
     normalization_separate = 'separate'
@@ -50,6 +51,7 @@ class AnomalyDataReader(SequenceDataReader):
                      use_augmentation=0):
             super().__init__(example_id=info_dict['sequence_name'], offset_size=offset_size, random_mode=random_mode)
 
+            self.label_type = label_type
             self.use_augmentation = use_augmentation
             # TODO save normalization in the dictionary
             self.age = (info_dict['age'] - 49.295620438) / 17.3674915241
@@ -61,11 +63,14 @@ class AnomalyDataReader(SequenceDataReader):
             self.length = self.file_handler.n_times
             self.length = self.length if limit_duration is None else min(self.length, limit_duration)
 
-            if label_type == 'age_class':
-                self.context = np.array([info_dict['gender_class']]).astype(np.float32)
-            elif label_type == 'anomaly':
-                self.context = np.array([[info_dict['gender_class'], self.age]]).astype(np.float32)
-            elif label_type == 'gender_class':
+            if label_type == AnomalyDataReader.label_age:
+                self.context = np.array([[info_dict['gender'] == 'M', info_dict['gender'] == 'F']]).astype(np.float32)
+            elif label_type == AnomalyDataReader.label_age_class:
+                self.context = np.array([[info_dict['gender'] == 'M', info_dict['gender'] == 'F']]).astype(np.float32)
+            elif label_type == AnomalyDataReader.label_anomaly_class:
+                self.context = np.array([[info_dict['gender'] == 'M', info_dict['gender'] == 'F',  self.age]])\
+                    .astype(np.float32)
+            elif label_type == AnomalyDataReader.label_gender_class:
                 self.context = np.array([self.age]).astype(np.float32)
             else:
                 raise NotImplementedError('Can not create context for this label_type %s' % label_type)
@@ -103,7 +108,12 @@ class AnomalyDataReader(SequenceDataReader):
             # Time might be needed for some advanced models like PhasedLSTM
             time = np.reshape(np.arange(index, index + sequence_size), newshape=[sequence_size, 1])
 
-            label = np.array([self.label] * sequence_size)
+            if self.label_type == 'age':
+                label = np.array([[self.label]] * sequence_size)
+                label = label.astype(np.float32)
+            else:
+                label = np.array([self.label] * sequence_size)
+
             return data, time, label, self.example_id, self.context
 
     @staticmethod
@@ -119,6 +129,7 @@ class AnomalyDataReader(SequenceDataReader):
                                  "Idea is to make the network invariant to those transformations")
         parser.add_argument("filter_gender", type=str, choices=['None', 'M', 'F'], default='None',
                             help="Will train using only male of female ")
+
         return parser
 
     def _initialize(self, label_type, normalization_type, use_augmentation, filter_gender, **kwargs):
@@ -126,15 +137,24 @@ class AnomalyDataReader(SequenceDataReader):
         self.normalization_type = normalization_type
         self.use_augmentation = use_augmentation
         self.filter_gender = filter_gender
-
+            
         if use_augmentation and self.data_type != SequenceDataReader.Train_Data:
             logger.warning('For Validation and Test we disable data augmentation')
             self.use_augmentation = 0
 
+        if label_type == 'age' and self.balanced:
+            logger.warning('Balancing not implemented for age regression. Set to 0')
+            self.balanced = 0
+
+        if self.batch_size % 2 == 1 and self.balanced:
+            logger.warning('Trying to set batch size to odd number while you want to use balanced minibatch. '
+                           'Increasing batch size by one from %s to %s' % (self.batch_size, self.batch_size+1))
+            self.batch_size += 1
+
         self.limit_examples = None if self.limit_examples <= 0 else self.limit_examples
         self.limit_duration = None if self.limit_duration <= 0 else self.limit_duration
 
-        logger.debug('Initialized AnomalyDataReader with parameters:')
+        logger.debug('Initialized %s AnomalyDataReader with parameters:' % self.data_type.title())
         logger.debug('label_type: %s' % self.label_type)
         logger.debug('limit_examples: %s' % self.limit_examples)
         logger.debug('limit_duration: %s' % self.limit_duration)
@@ -155,7 +175,7 @@ class AnomalyDataReader(SequenceDataReader):
 
     def _create_examples(self):
         if self.normalization_type != self.normalization_none:
-            if self.limit_duration != None:
+            if self.limit_duration is not None:
                 logger.warning('Will limit example duration but will compute normalization statistics from full '
                                'recordings.')
         if self.normalization_type != self.normalization_separate:
@@ -178,11 +198,12 @@ class AnomalyDataReader(SequenceDataReader):
             logger.warning('Will only use recordings with gender: %s' % self.filter_gender)
             info_dicts = [info_dict for info_dict in info_dicts if info_dict['gender'] == self.filter_gender]
 
-        # Find out what are the names of unique labels
         labels = list(set([info_dict[self.label_type] for info_dict in info_dicts]))
 
-        if len(labels) != self.output_size():
-            error = 'Not all labels present in the dataset, declared %d, detected %d' % (self.output_size(), len(labels))
+        # Sanity check if all labels are present in the dataset for classification (for age we do regression)
+        if len(labels) != self.output_size(self.label_type) and self.label_type != 'age':
+            error = 'Not all labels present in the dataset, declared %d, detected %d' % \
+                    (self.output_size(self.label_type), len(labels))
             logger.error(error)
             raise RuntimeError(error)
 
@@ -191,14 +212,20 @@ class AnomalyDataReader(SequenceDataReader):
         logger.debug('Create info objects for the files (Number of all sequences: %s' % len(info_dicts))
 
         if self.data_type == self.Validation_Data or self.data_type == self.Train_Data:
-            # Split out the data according to the CV fold
 
-            start = int(self.cv_k/self.cv_n * len(info_dicts))
-            end = int((self.cv_k+1)/self.cv_n * len(info_dicts))
-            logger.debug("Using CV split cv_n: %s, cv_k: %s, start: %s, end: %s" % (self.cv_n, self.cv_k, start, end))
+            if self.train_on_full:
+                assert self.data_type != self.Validation_Data, 'There is no validation data if train_on_full is set ' \
+                                                               'to 1'
+                validation_info_dicts = None
+                train_info_dicts = info_dicts + info_dicts
+            else:
+                # Split out the data according to the CV fold
+                start = int(self.cv_k/self.cv_n * len(info_dicts))
+                end = int((self.cv_k+1)/self.cv_n * len(info_dicts))
+                logger.debug("Using CV split cv_n: %s, cv_k: %s, start: %s, end: %s" % (self.cv_n, self.cv_k, start, end))
 
-            validation_info_dicts = info_dicts[start:end]
-            train_info_dicts = info_dicts[:start] + info_dicts[end:]
+                validation_info_dicts = info_dicts[start:end]
+                train_info_dicts = info_dicts[:start] + info_dicts[end:]
 
             if self.data_type == self.Train_Data:
                 info_dicts = train_info_dicts
@@ -230,25 +257,25 @@ class AnomalyDataReader(SequenceDataReader):
 
         logger.debug('Number of sequences in the dataset %d' % nested_list_len(self.examples))
 
-        # Additional data structure (faster access for some operations)
-        for class_examples in self.examples:
-            for example in class_examples:
-                self.examples_dict[example.example_id] = example
-
     @staticmethod
     # Has to be a static method, context_size is required when creating the model,
     # DataReader can't be instantiated properly before the model is created
     def context_size(label_type, **kwargs):
-        if label_type in ['age_class', 'gender_class']:
+        if label_type == 'gender_class':
             return 1
-        elif label_type == 'anomaly':
+        elif label_type in ['age_class', 'age']:
             return 2
+        elif label_type == 'anomaly':
+            return 3
 
     @staticmethod
     def input_size(**kwargs):
         return 21
 
     @staticmethod
-    def output_size(**kwargs):
+    def output_size(label_type, **kwargs):
+        # For age we do regression
+        if label_type == 'age':
+            return 1
         return 2
 

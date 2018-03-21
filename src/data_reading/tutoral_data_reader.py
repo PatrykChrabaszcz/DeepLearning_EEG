@@ -111,11 +111,6 @@ class FingerDataReader(SequenceDataReader):
                                                            labels_shape, offset_size=self.offset_size)
                               for i in range(number_of_examples)])
 
-        # Additional data structure for faster access
-        for class_examples in self.examples:
-            for example in class_examples:
-                self.examples_dict[example.example_id] = example
-
     @staticmethod
     def context_size(**kwargs):
         # What kind of context can be used in this dataset ?

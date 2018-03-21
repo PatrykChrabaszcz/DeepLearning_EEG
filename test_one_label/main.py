@@ -7,7 +7,7 @@ import click
 from src.data_reading.data_reader import SequenceDataReader
 from src.dl_core import ModelBase
 from src.dl_core import ModelTrainerBase
-from src.result_logger import ResultsLogger
+from src.result_processing.result_logger import ResultsLogger
 from src.utils import setup_logging
 from test_one_label.data_reader import OneLabelDataReader
 

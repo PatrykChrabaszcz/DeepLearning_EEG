@@ -1,17 +1,18 @@
+from src.deep_learning.pytorch.optimizer import ExtendedAdam, CosineScheduler, ScheduledOptimizer
 from src.deep_learning.model_trainer import ModelTrainerBase
+from src.result_processing import SimpleLossMetrics
 from torch.autograd import Variable
 from torch import nn
-import torch
-from src.deep_learning.pytorch.optimizer import AdamW, CosineScheduler, ScheduledOptimizer
 import logging
-from src.deep_learning.metrics import SimpleLossMetrics
-
+import torch
+import numpy as np
+from time import time as get_time
 logger = logging.getLogger(__name__)
 
 criterion_dict = {
-    'CrossEntropy': nn.CrossEntropyLoss,
-    'MeanSquaredError': nn.MSELoss,
-    'L1Loss': nn.L1Loss
+    "CrossEntropy": nn.CrossEntropyLoss,
+    "MeanSquaredError": nn.MSELoss,
+    "L1Loss": nn.L1Loss
 }
 
 
@@ -26,22 +27,16 @@ class ModelTrainer(ModelTrainerBase):
             self.model = self.model.cuda()
             self.criterion = self.criterion.cuda()
 
-        if self.optimizer == 'SGD':
+        if self.optimizer == "SGD":
             self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.learning_rate, momentum=0.9,
                                              weight_decay=self.weight_decay)
-            decay_wd = False
-        elif self.optimizer == 'Adam':
-            logger.info('Will use Adam')
-            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate,
-                                              weight_decay=self.weight_decay)
-            decay_wd = False
-        elif self.optimizer == 'AdamW':
-            logger.info('Will use AdamW')
-            self.optimizer = AdamW(self.model.parameters(), lr=self.learning_rate,
-                                   weight_decay=self.weight_decay)
-            decay_wd = True
+
+        elif self.optimizer == "ExtendedAdam":
+            logger.info("Will use Extended Adam with weight_decay %s l2_decay %s" % (self.weight_decay, self.l2_decay))
+            self.optimizer = ExtendedAdam(self.model.parameters(), lr=self.learning_rate,
+                                          weight_decay=self.weight_decay, l2_decay=self.l2_decay)
         else:
-            raise NotImplementedError('This optimizer is not implemented')
+            raise NotImplementedError('This optimizer %s is not implemented' % self.optimizer)
 
         if self.cosine_decay:
             logger.info('Will use cosine restarts decay')
@@ -49,7 +44,7 @@ class ModelTrainer(ModelTrainerBase):
         else:
             self.scheduler = None
 
-        self.optimizer = ScheduledOptimizer(self.optimizer, self.scheduler, decay_wd=decay_wd)
+        self.optimizer = ScheduledOptimizer(self.optimizer, self.scheduler)
 
     @staticmethod
     def add_arguments(parser):
@@ -75,17 +70,18 @@ class ModelTrainer(ModelTrainerBase):
         if self.cuda:
             batch = batch.cuda()
             labels = labels.cuda()
-            if isinstance(hidden, tuple):
-                hidden = tuple(h.cuda() for h in hidden)
+
+            # Hidden is a tuple where each element contains a list of states per layer
+            # For GRU this tuple has 1 element, for LSTM this tuple has 2 elements
+            if self.model.state_tuple_dim == 1:
+                hidden = [h.cuda() for h in hidden]
             else:
-                try:
-                    hidden = hidden.cuda()
-                except AttributeError:
-                    hidden = [h.cuda() for h in hidden]
+                hidden = tuple([h.cuda() for h in hidden_ti] for hidden_ti in hidden)
+
             if self.model.context_size > 0:
                 context = context.cuda()
 
-        batch = self.model.lasso(batch)
+        batch = self.model.lasso_module(batch)
         outputs, hidden = self.model(batch, hidden, context)
 
         if '_last' in self.objective_type:
@@ -99,12 +95,12 @@ class ModelTrainer(ModelTrainerBase):
             raise NotImplementedError
 
         loss = self.criterion(training_outputs, training_labels)
-        loss = self.model.add_lasso_loss(loss)
+        loss = loss + self.model.lasso_module.loss()
 
         if update:
             self.optimizer.zero_grad()
             loss.backward()
-            #
+
             # total_norm = 0
             # for p in list(filter(lambda p: p.grad is not None, self.model.parameters())):
             #     param_norm = p.grad.data.norm(2)
@@ -119,11 +115,10 @@ class ModelTrainer(ModelTrainerBase):
 
         return outputs, hidden, loss
 
-    def _gather_results(self, ids, outputs, labels, loss, batch_size, metrics):
+    def _gather_results(self, ids, outputs, labels, loss, metrics):
         if self.metrics_class == SimpleLossMetrics:
-            metrics.append_results(ids, None, None, loss.cpu().data.numpy()[0],
-                                   batch_size=batch_size)
+            # Save the time by not copying outputs and labels to the CPU
+            metrics.append_results(ids, None, None, loss.cpu().data.numpy()[0])
         else:
-            metrics.append_results(ids, outputs.cpu().data.numpy(), labels, loss.cpu().data.numpy()[0],
-                                   batch_size=batch_size)
+            metrics.append_results(ids, outputs.cpu().data.numpy(), labels, loss.cpu().data.numpy()[0])
 

@@ -9,7 +9,6 @@ import pickle
 logger = logging.getLogger(__name__)
 
 
-# This does not use multi-threading at all
 class MnistDataReader(SequenceDataReader):
     Mnist_Seq_Size = 784
 
@@ -42,7 +41,17 @@ class MnistDataReader(SequenceDataReader):
 
             return data, time, label, self.example_id, self.context
 
-    def _initialize(self, **kwargs):
+    @staticmethod
+    def add_arguments(parser):
+        SequenceDataReader.add_arguments(parser)
+        parser.add_argument("permute", type=int, choices=[0, 1], default=0,
+                            help="If set to 1 then will permute the data")
+        return parser
+
+    def _initialize(self, permute, **kwargs):
+        self.permute = permute
+        if permute:
+            logger.warning('Permutation not implemented yet')
         assert 0 < self.sequence_size <= 784, 'Bad sequence length %d' % self.sequence_size
 
     def _create_examples(self):
@@ -76,11 +85,6 @@ class MnistDataReader(SequenceDataReader):
                          (label, len(self.examples[i]), sum([e.get_length() for e in self.examples[i]])))
 
         logger.debug('Number of sequences in the dataset %d' % nested_list_len(self.examples))
-
-        # Additional data structure (faster access for some operations)
-        for class_examples in self.examples:
-            for example in class_examples:
-                self.examples_dict[example.example_id] = example
 
     @staticmethod
     # Has to be a static method, context_size is required when creating the model,
@@ -121,15 +125,19 @@ class MnistDataReader(SequenceDataReader):
             train_set, valid_set, test_set = pickle.load(f)
         f.close()
 
+        x_1, y_1 = train_set
+        x_2, y_2 = valid_set
+        x = np.concatenate((x_1, x_2))
+        y = np.concatenate((y_1, y_2))
+
+        x_mean = np.mean(x, axis=0)
+
         if data_type == SequenceDataReader.Train_Data or data_type == SequenceDataReader.Validation_Data:
             # We might want to make a different validation split!
-            x_1, y_1 = train_set
-            x_2, y_2 = valid_set
-            x = np.concatenate((x_1, x_2))
-            y = np.concatenate((y_1, y_2))
+            x, y = x - x_mean, y
 
         elif data_type == SequenceDataReader.Test_Data:
-            x, y = test_set
+            x, y = test_set[0] - x_mean, test_set[1]
         else:
             raise NotImplementedError('data_type %s is not implemented' % data_type)
 

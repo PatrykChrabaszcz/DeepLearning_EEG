@@ -62,8 +62,8 @@ class TrainManager:
         if data_type is SequenceDataReader.Train_Data and train is False:
             logger.warning('You use training data but you do not train the network.')
 
-        if data_type == 'train':
-            sequence_size = experiment_arguments.initial_sequence_size
+        if data_type == 'train' or experiment_arguments.validation_sequence_size == 0:
+            sequence_size = experiment_arguments.sequence_size
         else:
             sequence_size = experiment_arguments.validation_sequence_size
 

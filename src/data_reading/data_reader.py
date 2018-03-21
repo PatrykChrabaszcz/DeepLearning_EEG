@@ -117,11 +117,11 @@ class SequenceDataReader:
                             help="Number of parallel data readers.")
         parser.add_argument("batch_size", type=int, default=64,
                             help="Batch size used for training.")
-        parser.add_argument("validation_batch_size", type=int, default=64,
+        parser.add_argument("validation_batch_size", type=int, default=0,
                             help="Batch size used for test and validation.")
-        parser.add_argument("initial_sequence_size", type=int, dest='initial_sequence_size', default=1000,
+        parser.add_argument("sequence_size", type=int, default=1000,
                             help="How many time-points are used for each training sequence.")
-        parser.add_argument("validation_sequence_size", type=int, dest='validation_sequence_size', default=1000,
+        parser.add_argument("validation_sequence_size", type=int, default=0,
                             help="Sometimes it might be better/faster to increase the sequence size for validation."
                                  "For example for CNNs.")
         parser.add_argument("balanced", type=int, default=1, choices=[0, 1],
@@ -139,10 +139,16 @@ class SequenceDataReader:
         parser.add_argument("forget_state", type=int, default=0, choices=[0, 1],
                             help="If set to 1 then state will not be forward propagated between subsequences from the "
                                  "same example.")
+        parser.add_argument("train_on_full", type=int, default=0, choices=[0, 1], help="If set to 1 then will use "
+                                                                                       "all data for training.")
         parser.add_argument("cv_n", type=int, default=5,
                             help="How many folds are used for cross validation.")
+
         parser.add_argument("cv_k", type=int, default=4,
                             help="Which fold is used for validation. Indexing starts from 0!")
+        parser.add_argument("force_parameters", type=int, default=0, choices=[0, 1],
+                            help="For Test and validation we change some parameters: balance, forget_state, continuous "
+                                 "and random_mode. Setting force_parameters to 1 will disable this change")
         return parser
 
     def __init__(self,
@@ -150,7 +156,7 @@ class SequenceDataReader:
                  readers_count,
                  batch_size,
                  validation_batch_size,
-                 initial_sequence_size,
+                 sequence_size,
                  validation_sequence_size,
                  balanced,
                  random_mode,
@@ -158,8 +164,10 @@ class SequenceDataReader:
                  limit_examples,
                  limit_duration,
                  forget_state,
+                 train_on_full,
                  cv_n,
                  cv_k,
+                 force_parameters,
                  offset_size,
                  state_initializer,
                  data_type,
@@ -168,18 +176,21 @@ class SequenceDataReader:
 
         assert data_type in self.DataTypes, 'Can not interpret %s as data_type' % data_type
 
+        # Defaults for train
+        self.batch_size = batch_size
+        self.sequence_size = sequence_size
+
         if data_type == self.Validation_Data or data_type == self.Test_Data:
-            logger.warning('For %s pass we disable: balanced, random_mode, continuous, forget_state' % data_type)
-            balanced = False
-            random_mode = 0
-            continuous = 0
-            forget_state = 0
-            self.batch_size = validation_batch_size
-            self.sequence_size = validation_sequence_size
-        else:
-            # Keep defaults for other parameters
-            self.batch_size = batch_size
-            self.sequence_size = initial_sequence_size
+            if force_parameters != 1:
+                logger.warning('For %s pass we disable: balanced, random_mode, continuous, forget_state' % data_type)
+                balanced = False
+                random_mode = 0
+                continuous = 0
+                forget_state = 0
+
+            # If specified by the user then overwrite
+            self.batch_size = validation_batch_size if validation_batch_size != 0 else self.batch_size
+            self.sequence_size = validation_sequence_size if validation_sequence_size != 0 else self.sequence_size
 
         self.data_path = data_path
 
@@ -189,6 +200,7 @@ class SequenceDataReader:
         self.limit_duration = limit_duration
         self.forget_state = forget_state
 
+        self.train_on_full = train_on_full
         self.cv_n = cv_n
         self.cv_k = cv_k
         assert cv_k < cv_n, "Fold used for validation has index which is higher than the number of folds."
@@ -207,9 +219,6 @@ class SequenceDataReader:
 
         # Info Queue -> Information that is used to read a proper chunk of data from a proper file
         self.info_queue = multiprocessing.Queue()
-        # Adds up to queue_limit examples at the beginning of each epoch, then after each batch adds batch_size new
-        # examples
-        self.queue_limit = self.batch_size * 5
 
         # Data Queue -> Data with labels used for training
         self.data_queue = multiprocessing.Queue()
@@ -232,6 +241,15 @@ class SequenceDataReader:
         self._initialize(**kwargs)
 
         self._create_examples()
+
+        # Additional data structure (faster access for some operations)
+        for class_examples in self.examples:
+            for example in class_examples:
+                self.examples_dict[example.example_id] = example
+
+        # Adds up to queue_limit examples at the beginning of each epoch, then after each batch adds batch_size new
+        # examples
+        self.queue_limit = self.batch_size * 6
 
         # Create readers
         logger.info('Create reader processes.')
