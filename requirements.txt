@@ -5,3 +5,4 @@ mne
 ConfigSpace
 hpbandster
 torch
+numpy

@@ -1,4 +1,10 @@
-from hpbandster.config_generators.bohb import BOHB
+from hpbandster.config_generators.base import base_config_generator
+from src.hpbandster.results_logger import ResultLogger
+from ConfigSpace import Configuration
+import traceback
+import scipy.stats as sps
+import statsmodels.api as sm
+import numpy as np
 import logging
 import os
 import pickle
@@ -9,7 +15,7 @@ import json
 logger = logging.getLogger(__name__)
 
 
-class ConfigGenerator(BOHB):
+class ConfigGenerator(base_config_generator):
     """
     Wrapper around BOHB from HpBanSter [https://github.com/automl/HpBandSter]
     We add arguments to the CLI options and log some information each time new result is received.
@@ -33,68 +39,296 @@ class ConfigGenerator(BOHB):
         parser.add_argument("min_bandwidth", type=float, default=0.001,
                             help="When all good samples have the same value KDE will have bandwidth of 0. "
                                  "Force minimum bandwidth to diversify samples.")
-
+        parser.add_argument("bw_estimation_method", type=str, default='normal_reference',
+                            choices=['normal_reference', 'cross_validation'],
+                            help="Method for kernel density estimator bandwidth selection.")
         return parser
 
     def __init__(self, config_space, working_dir, min_points_in_model, top_n_percent, num_samples, random_fraction,
-                 bandwidth_factor, min_bandwidth, **kwargs):
-        """
-        Args:
-            config_space: ConfigSpace object. Contains declaration of all parameters that should be optimized.
-                Usually derived from the .pcs files.
-            working_dir: Directory for logs from the current experiment.
-        """
-        super().__init__(configspace=config_space, min_points_in_model=min_points_in_model, top_n_percent=top_n_percent,
-                         num_samples=num_samples, random_fraction=random_fraction, bandwidth_factor=bandwidth_factor,
-                         min_bandwidth=min_bandwidth, logger=logger)
+                 bandwidth_factor, min_bandwidth, bw_estimation_method, **kwargs):
+        assert 0 < top_n_percent < 100
+        assert 0.0 <= random_fraction <= 1.0
+        if min_points_in_model < len(config_space.get_hyperparameters()) + 1:
+            min_points_in_model = len(config_space.get_hyperparameters()) + 1
+            logger.warning('Minimum number of points in the model is too low, will use %d.' % min_points_in_model)
 
+        super().__init__(logger=logger)
+
+        self.config_space = config_space
         self.working_dir = working_dir
+        self.min_points_in_model = min_points_in_model
+        self.top_n_percent = top_n_percent
+        self.num_samples = num_samples
+        self.random_fraction = random_fraction
+        self.bw_factor = bandwidth_factor
+        self.min_bandwidth = min_bandwidth
+        self.bw_estimation_method = bw_estimation_method
 
-        # Try to restore the run
-        try:
-            logger.info('Check if there are any results from the previous run.')
-            with open(os.path.join(self.working_dir, 'configs.p'), 'rb') as f:
-                self.configs = pickle.load(f)
+        hps = self.config_space.get_hyperparameters()
 
-            with open(os.path.join(self.working_dir, 'losses.p'), 'rb') as f:
-                self.losses = pickle.load(f)
+        self.kde_vartypes = ''.join(['u' if hasattr(h, 'choices') else 'c' for h in hps])
+        self.vartypes = np.array([len(h.choices) if hasattr(h, 'choices') else 0 for h in hps], dtype=int)
 
-            assert len(self.configs) == len(self.losses), 'Length of configs and losses do not match'
-            logger.info('Found %d already evaluated configurations' % len(self.configs))
+        # store precomputed probs for the categorical parameters
+        self.cat_probs = []
 
-        except FileNotFoundError:
-            logger.warning('Did not find any information about previous BO runs in the current working dir %s.'
-                           'Starts from scratch.' % self.working_dir)
+        # First key is a budget, then list with different configurations
+        self.configs = dict()
+        # First key is a budget, then loss that corresponds to the configuration
+        self.losses = dict()
 
-    # Maybe do something more?
+        # Kernel Density Estimator models for good and bad samples
+        self.kde_models = dict()
+
+    def load_from_results_logger(self, results_logger):
+        """
+        Function that can be called at the beginning. It will use results_logger object to access configurations
+        and results obtained with previous runs. It is up to the user to make sure that the same configuration space
+        was used before.
+        Args:
+            results_logger: Object that holds information about previous configurations and results
+        """
+
+        for configuration, budget, loss in results_logger.get_results(self.config_space):
+            self.add_configuration(configuration, budget, loss)
+
+        # Start from the biggest budget
+        for budget in sorted(self.configs.keys())[::-1]:
+            if self.update_kde_model(budget) is True:
+                logger.debug('Successfully created a model for budget %s' % budget)
+                break
+
     def get_config(self, budget):
-        config, info_dict = super().get_config(budget)
+        """
+        Function to sample a new configuration.
+        Successive halving iterations in hyperband will use this function to query a new configuration.
+        At the beginning when not enough points are observed those will be simply random configurations.
+        Later configurations will be sampled from the BO model that was created for the highest budget.
+        We assume that it is the most accurate one.
+        Args:
+            budget: Budget for the training. Higher budget should give better final performance estimation.
+            How to interpret the budget depends on particular experiment. See BudgetDecoder class for example.
+        Returns:
+            Configuration that can be used for the training
+        """
 
-        return config, info_dict
+        # We always have some chance to sample from random distribution
+        # If not enough points seen for any budget then also sample from a random distribution
+        if len(self.kde_models.keys()) == 0 or np.random.rand() < self.random_fraction:
+            logger.debug('Sample new random configuration.')
+            return self.config_space.sample_configuration().get_dictionary(), dict(model_based_pick=False)
 
-    # Saves results after each new job. Maybe it can be recovered from the things HpBandSter saves internally (?)
+        try:
+            logger.debug('Try to sample model based configuration.')
+
+            # We assume that highest budget gives the best estimate of the final performance
+            budget = max(self.kde_models.keys())
+
+            l = self.kde_models[budget]['good'].pdf
+            g = self.kde_models[budget]['bad'].pdf
+            bo_objective = lambda x: max(1e-8, g(x)) / max(l(x), 1e-8)
+
+            kde_good = self.kde_models[budget]['good']
+            kde_bad = self.kde_models[budget]['bad']
+
+            # We need to run some random search on top of BO model to find which points are the promising ones.
+            best = np.inf
+            best_proposed_point = None
+            for i in range(self.num_samples):
+                # We will sample new proposed points close to random good points.
+                # I guess it is more efficient.
+                good_point = kde_good.data[np.random.randint(0, len(kde_good.data))]
+                proposed_point = []
+
+                # Iterate each dimension and sample independently each dimension
+                for m, bw, t in zip(good_point, kde_good.bw, self.vartypes):
+
+                    bw = max(bw, self.min_bandwidth)
+                    # Continuous -> Gaussian
+                    if t == 0:
+                        bw = self.bw_factor * bw
+                        try:
+                            proposed_point.append(sps.truncnorm.rvs(-m / bw, (1 - m) / bw, loc=m, scale=bw))
+                        # TODO: Figure out what error is thrown
+                        except KeyError:
+                            logger.warning("Truncated Normal failed for: "
+                                           "\ndatum=%s\nbandwidth=%s\nfor entry with value %s" %
+                                           (good_point, kde_good.bw, m))
+
+                            logger.warning("Data in the KDE:\n%s" % kde_good.data)
+                    # Categorical -> (1-bw) probability for the current value, bw/(n-1) probability for any other value
+                    else:
+                        if np.random.rand() < (1 - bw):
+                            proposed_point.append(int(m))
+                        else:
+                            proposed_point.append(np.random.randint(t))
+
+                val = bo_objective(proposed_point)
+
+                # I do not think it triggers
+                if not np.isfinite(val):
+                    logger.warning('Sampled vector: %s has EI value %s' % (proposed_point, val))
+                    logger.warning("Data in the KDEs:\n%s\n%s" % (kde_good.data, kde_bad.data))
+                    logger.warning("Bandwidth of the KDEs:\n%s\n%s" % (kde_good.bw, kde_bad.bw))
+                    logger.warning("l(x) = %s" % (l(proposed_point)))
+                    logger.warning("g(x) = %s" % (g(proposed_point)))
+
+                    # Right now, this happens because a KDE does not contain all values for a categorical parameter
+                    # this cannot be fixed with the statsmodels KDE, so for now, we are just going to evaluate this one
+                    # if the good_kde has a finite value, i.e. there is no config with that value in the bad kde,
+                    # so it shouldn't be terrible.
+                    if np.isfinite(l(proposed_point)):
+                        best_proposed_point = proposed_point
+                        break
+
+                if val < best:
+                    best = val
+                    best_proposed_point = proposed_point
+
+            if best_proposed_point is None:
+                logger.debug("Sampling based optimization with %i samples failed."
+                             "Using random configuration" % self.num_samples)
+                sample = self.config_space.sample_configuration()
+                info_dict = dict(model_based_pick=False)
+            else:
+                logger.debug('Best point proposed to evaluate: {}, {}'.format(best_proposed_point, best))
+                sample = Configuration(self.config_space, vector=best_proposed_point)
+                info_dict = dict(model_based_pick=True)
+        except KeyError:
+            self.logger.warning("Sampling based optimization with %i samples failed\n %s \nUsing random configuration" %
+                                (self.num_samples, traceback.format_exc()))
+            sample = self.config_space.sample_configuration()
+            info_dict = dict(model_based_pick=False)
+
+        return sample.get_dictionary(), info_dict
+
+    def impute_conditional_data(self, array):
+        return_array = np.empty_like(array)
+        for i in range(array.shape[0]):
+            datum = np.copy(array[i])
+            nan_indices = np.argwhere(np.isnan(datum)).flatten()
+
+            while np.any(nan_indices):
+                nan_idx = nan_indices[0]
+                valid_indices = np.argwhere(np.isfinite(array[:, nan_idx])).flatten()
+
+                if len(valid_indices) > 0:
+                    # pick one of them at random and overwrite all NaN values
+                    row_idx = np.random.choice(valid_indices)
+                    datum[nan_indices] = array[row_idx, nan_indices]
+
+                else:
+                    # no good point in the data has this value activated, so fill it with a valid but random value
+                    t = self.vartypes[nan_idx]
+                    if t == 0:
+                        datum[nan_idx] = np.random.rand()
+                    else:
+                        datum[nan_idx] = np.random.randint(t)
+
+                nan_indices = np.argwhere(np.isnan(datum)).flatten()
+            return_array[i, :] = datum
+        return return_array
+
     def new_result(self, job):
-        logger.debug('New results received')
-        super().new_result(job)
+        """
+        Function used to register finished runs. It will be called by HpBandSter master module.
+        Args:
+            job: Job object containing all the info about the run.
+        """
 
-        with open(os.path.join(self.working_dir, 'configs.p'), 'wb') as f:
-            logger.debug('Saving configs')
-            pickle.dump(self.configs, f)
+        configuration, budget, loss = self.extract_configuration(job)
+        self.add_configuration(configuration=configuration, budget=budget, loss=loss)
 
-        with open(os.path.join(self.working_dir, 'losses.p'), 'wb') as f:
-            pickle.dump(self.losses, f)
-            logger.debug('Saving losses')
+        # If we already have a model for a higher budget we will not use information from this run
+        # We assume that models with higher budgets are more accurate and use them instead.
+        if max(list(self.kde_models.keys()) + [-np.inf]) <= budget:
+            self.update_kde_model(budget)
 
-        if job.result is not None:
-            loss = job.result["loss"]
-            info = job.result["info"]
-            budget = job.kwargs["budget"]
-            config = job.kwargs["config"]
-
-            logger.info('Received new result, loss %s, budget %s' % (loss, budget))
-
-            logger.info(json.dumps(info, indent=2, sort_keys=True))
-            logger.info('Config')
-            logger.info(json.dumps(config, indent=2, sort_keys=True))
+    def extract_configuration(self, job):
+        # One could skip crashed results, but we decided to assign a +inf loss
+        # We count them as bad configurations
+        if job.result is None:
+            logger.warning("Job %s failed with exception\n%s".format(job.id, job.exception))
+            loss = np.inf
         else:
-            logger.warning('Received None result for one of the jobs')
+            loss = job.result["loss"]
+
+        budget = job.kwargs["budget"]
+
+        # We want to get a numerical representation of the configuration in the original space
+        configuration = Configuration(self.config_space, job.kwargs["config"])
+
+        return configuration, budget, loss
+
+    def add_configuration(self, configuration, budget, loss):
+        if budget not in self.configs.keys():
+            self.configs[budget] = []
+            self.losses[budget] = []
+
+        # Save new results
+        # Standardize values (categorical: {0, 1, ...} integer, ordinal and continuous [0, 1])
+        self.configs[budget].append(configuration.get_array())
+        self.losses[budget].append(loss)
+
+    def update_kde_model(self, budget):
+        if len(self.configs[budget]) <= self.min_points_in_model + 1:
+            logger.debug("Only %i run(s) for budget %f available, need more than %s. Can't build the model!" %
+                         (len(self.configs[budget]), budget, self.min_points_in_model + 1))
+            return False
+
+        train_configs = np.array(self.configs[budget])
+        train_losses = np.array(self.losses[budget])
+        sorted_train_configs = train_configs[np.argsort(train_losses)]
+
+        sample_cnt = train_configs.shape[0]
+
+        # TODO: Question about using max here, it makes both n_good and n_bad the same at the beginning
+        n_good = max(self.min_points_in_model, (self.top_n_percent * sample_cnt) // 100)
+        n_bad = max(self.min_points_in_model, ((100 - self.top_n_percent) * sample_cnt) // 100)
+
+        # Low loss -> Good data points
+        train_data_good = self.impute_conditional_data(sorted_train_configs[:n_good])
+        train_data_bad = self.impute_conditional_data(sorted_train_configs[-n_bad:])
+
+        assert train_data_good.shape[0] > train_data_good.shape[1], 'Number of points lower than number of dimensions!'
+        assert train_data_bad.shape[0] > train_data_bad.shape[1], 'Number of points lower than number of dimensions!'
+
+        bad_kde = sm.nonparametric.KDEMultivariate(data=train_data_bad, var_type=self.kde_vartypes,
+                                                   bw=self.bw_estimation_method)
+        good_kde = sm.nonparametric.KDEMultivariate(data=train_data_good, var_type=self.kde_vartypes,
+                                                    bw=self.bw_estimation_method)
+
+        # Apply minimum bandwidth
+        bad_kde.bw = np.clip(bad_kde.bw, self.min_bandwidth, None)
+        good_kde.bw = np.clip(good_kde.bw, self.min_bandwidth, None)
+
+        # Update models for this budget
+        self.kde_models[budget] = dict(good=good_kde, bad=bad_kde)
+
+        logger.debug('Build new model for budget %f based on %i/%i split.' % (budget, n_good, n_bad))
+        logger.debug('Best loss for this budget:%f' % (np.min(train_losses)))
+        return True
+
+
+if __name__ == '__main__':
+    from src.experiment_arguments import ExperimentArguments
+
+    working_dir = '/mhome/chrabasp/EEG_Results/BO_Anomaly'
+    config_space_file = '/mhome/chrabasp/Workspace/EEG/config/anomaly_simple.pcs'
+    results_logger = ResultLogger(working_dir=working_dir)
+    config_space = ExperimentArguments.read_configuration_space(config_space_file)
+    config_generator = ConfigGenerator(config_space=config_space,
+                                       working_dir=working_dir,
+                                       min_points_in_model=0,
+                                       top_n_percent=20,
+                                       num_samples=100,
+                                       random_fraction=0.3,
+                                       bandwidth_factor=3.0,
+                                       min_bandwidth=0.001,
+                                       bw_estimation_method='normal_reference')
+    config_generator.load_from_results_logger(results_logger)
+
+    c = np.array(config_generator.configs[list(config_generator.configs.keys())[0]][:3])
+
+    print('Finished...')
+

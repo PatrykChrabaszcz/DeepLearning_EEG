@@ -1,5 +1,6 @@
 from src.experiment_arguments import ExperimentArguments
 from src.hpbandster.config_generator import ConfigGenerator
+from src.hpbandster.results_logger import ResultLogger
 from hpbandster.iterations.successivehalving import SuccessiveHalving
 from hpbandster.distributed.utils import start_local_nameserver
 from hpbandster.api.util import json_result_logger
@@ -46,10 +47,19 @@ class BayesianOptimizer(Master):
     def __init__(self, working_dir, config_space_file, n_iterations, run_id, eta, min_budget, max_budget, ping_interval,
                  nic_name, **kwargs):
 
+        # Class that is used by the HpBandSter Master to store and manage job configurations and results
+        # At the beginning will load results from the previous HpBandSter runs. Those can be used to initialize
+        # config_generator
+
+        results_logger = ResultLogger(working_dir)
+
         # Config space that holds all hyperparameters, default values and possible ranges
         self.config_space = ExperimentArguments.read_configuration_space(config_space_file)
-        # Config generator that builds a model and samples promising configurations
+
+        # Config generator that builds a model and samples promising configurations.
+        # Initialized from previous configurations if those are present
         self.config_generator = ConfigGenerator(self.config_space, working_dir=working_dir, **kwargs)
+        self.config_generator.load_from_results_logger(results_logger)
 
         self.pyro_conf_file = os.path.join(working_dir, 'pyro.conf')
 
