@@ -1,5 +1,5 @@
 from src.deep_learning.pytorch.models.model_base import PytorchModelBase
-from src.deep_learning.pytorch.models.utils import RNNLayerNorm
+from src.deep_learning.pytorch.models.rnn import RNNLayerNorm
 import torch.nn.functional as f
 from torch import nn, cat
 import logging

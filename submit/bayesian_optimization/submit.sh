@@ -11,10 +11,18 @@
 source /home/chrabasp/Workspace/env/bin/activate
 export LD_LIBRARY_PATH=/home/chrabasp/cuda-8.0/lib64/
 
-echo $HOSTNAME
-echo $CUDA_VISIBLE_DEVICES
+echo 'HostName' $HOSTNAME
+echo 'Device' $CUDA_VISIBLE_DEVICES
+
+# Some problems with this particular GPU, Could happen that we do not start master (but unlikely)!!
+if [ "$HOSTNAME" != "metagpui" ] || [ "$CUDA_VISIBLE_DEVICES" != "2" ]
+then
+echo OKEY
 python main.py  --ini_file config/anomaly_simple.ini \
                 --experiment_type BayesianOptimization \
                 --budget 20 \
-                --working_dir /home/chrabasp/EEG_Results/BO_Anomaly \
+                --working_dir /home/chrabasp/EEG_Results/BO_Anomaly_6 \
                 --is_master ${IS_MASTER}
+else
+sleep 30
+fi

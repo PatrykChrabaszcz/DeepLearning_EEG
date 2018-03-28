@@ -3,7 +3,7 @@ import json
 import os
 
 
-folder = '/mhome/chrabasp/EEG_Results/BO_Anomaly/train_manager'
+folder = '/mhome/chrabasp/EEG_Results/BO_Anomaly_6/train_manager'
 scores = {}
 
 
@@ -29,7 +29,7 @@ for train_run_dir in sorted([f.path for f in os.scandir(folder) if f.is_dir()]):
         print('No file available for the run %s, Skipping...' % train_run_dir)
         continue
 
-    if float(summarized_results['X_acc_all_log_prob']) < 0.82:
+    if float(summarized_results['X_acc_all_log_prob']) < 0.86:
         continue
 
     for key in detailed_results.keys():

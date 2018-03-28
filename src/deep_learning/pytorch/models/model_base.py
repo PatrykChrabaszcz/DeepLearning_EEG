@@ -3,8 +3,8 @@ import torch.nn as nn
 from torch.autograd import Variable
 import numpy as np
 from src.deep_learning.model_base import ModelBase
-from src.deep_learning.pytorch.models.lasso_feature_selection import LassoFeatureSelection
-from src.deep_learning.pytorch.models.utils import IndRNN, IndGRU
+from src.deep_learning.pytorch.models.common.lasso_feature_selection import LassoFeatureSelection
+from src.deep_learning.pytorch.models.rnn import IndRNN, IndGRU
 import logging
 
 
@@ -29,6 +29,7 @@ class PytorchModelBase(nn.Module, ModelBase):
         self.rnn_normalization = rnn_normalization
         self.skip_mode = skip_mode
         self.use_context = use_context
+        self.state_tuple_dim = 1
 
         self.lasso_selection = lasso_selection
         self.lasso_module = LassoFeatureSelection(input_size)
@@ -67,12 +68,13 @@ class PytorchModelBase(nn.Module, ModelBase):
 
     # Dummy method for non RNN models that do not require hidden state. Reimplemented in RnnBase.
     def export_state(self, states):
+        states = states[0]
         states = states.cpu().data.numpy()
         return [s for s in states]
 
     # Dummy method for non RNN models that do not require hidden state. Reimplemented in RnnBase.
     def import_state(self, states):
-        return Variable(torch.from_numpy(np.zeros(len(states))), requires_grad=False)
+        return [Variable(torch.from_numpy(np.zeros(len(states))), requires_grad=False)]
 
 
 class RnnBase(PytorchModelBase):

@@ -4,6 +4,7 @@ import random
 import logging
 import signal
 from queue import Empty
+from src.utils import nested_list_len
 
 # Definitions
 # EXAMPLE: we use the term 'example' to define independent sequence, e.g. full sequence recording from one session.
@@ -242,6 +243,11 @@ class SequenceDataReader:
 
         self._create_examples()
 
+        for label, class_examples in enumerate(self.examples):
+            logger.debug('Label %s: Number of recordings %d, Cumulative Length %d' %
+                         (label, len(class_examples), sum([e.get_length() for e in class_examples])))
+        logger.debug('Number of sequences in the dataset %d' % nested_list_len(self.examples))
+
         # Additional data structure (faster access for some operations)
         for class_examples in self.examples:
             for example in class_examples:
@@ -471,3 +477,30 @@ class SequenceDataReader:
         self.state_needs_update = True
         return ids, np.stack(data_arrays, axis=0), np.stack(time_arrays, axis=0), np.stack(labels, axis=0), \
                np.stack(context_arrays, axis=0)
+
+    def cv_split(self, data_list):
+        """
+        Helper function that based on values set for cv_k and cv_n will split the data into train and validation set.
+        """
+        size = len(data_list)
+        assert size != 0, 'Can not make a cv split from an empty data list.'
+
+        # If data_type is set to test no split will be made.
+        if self.data_type == self.Test_Data:
+            return data_list
+
+        # If we want to train on the full training dataset for final evaluation then return all the data
+        if self.train_on_full:
+            assert self.data_type != self.Validation_Data, 'Can not use validation if train_on_full is set to 1'
+            return data_list
+
+        # Split out the data according to the CV fold
+        start = int(self.cv_k/self.cv_n * size)
+        end = int((self.cv_k+1)/self.cv_n * size)
+
+        logger.debug("Using CV split cv_n: %s, cv_k: %s, start: %s, end: %s" % (self.cv_n, self.cv_k, start, end))
+
+        if self.data_type == self.Train_Data:
+            return data_list[:start] + data_list[end:]
+        else:
+            return data_list[start:end]

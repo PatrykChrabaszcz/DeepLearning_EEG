@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from src.deep_learning.pytorch.models.model_base import RnnBase
-from src.deep_learning.pytorch.models.utils import RNN
+from src.deep_learning.pytorch.models.rnn import RNN
 import logging
 
 

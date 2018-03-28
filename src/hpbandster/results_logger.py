@@ -30,7 +30,7 @@ class ResultLogger(object):
                 with open(self.configs_file) as f:
                     # Each line contains Json Object with a single configuration
                     for line in f.readlines():
-                        configuration_id, configuration_params = json.loads(line)
+                        configuration_id, configuration_params, model_based = json.loads(line)
                         configuration_id = tuple(configuration_id)
                         assert configuration_id not in list(self._configs.keys()), \
                             'Configuration %s present twice while it should be unique.' % configuration_id
@@ -47,16 +47,18 @@ class ResultLogger(object):
             """
             # If configuration is already present (for example it was executed for a lower budget) we do nothing.
             if job.id not in self._configs.keys():
-                self._configs[job.id] = job.kwargs['config']
+                config = [job.kwargs['config'], job.config_info]
+                self._configs[job.id] = config
+
                 # Save it to the file
                 with open(self.configs_file, 'a') as f:
                     logger.debug('Saving new configuration %s to the configs file %s' % (job.id, self.configs_file))
-                    f.write(json.dumps([job.id, job.kwargs['config']], sort_keys=True))
+                    f.write(json.dumps([job.id] + config, sort_keys=True))
                     f.write('\n')
 
-        def get_configuration(self, id, configuration_space):
-            id = tuple(id)
-            return Configuration(configuration_space=configuration_space, values=self._configs[id])
+        def get_configuration(self, configuration_id, configuration_space):
+            configuration_id = tuple(configuration_id)
+            return Configuration(configuration_space=configuration_space, values=self._configs[configuration_id])
 
     class Results:
         """
@@ -72,10 +74,8 @@ class ResultLogger(object):
                 with open(results_file) as f:
                     for line in f.readlines():
                         # Read important stuff, ignore for now not the rest
-                        configuration_id, budget, timestamps, result, exception_str = json.loads(line)
-                        loss = result['loss'] if result is not None else np.inf
-                        info = result['info'] if result is not None else dict()
-                        self.results.append((configuration_id, budget, loss))
+                        result = json.loads(line)
+                        self.results.append(result)
             except FileNotFoundError:
                 # If file is not present we will do not load anything
                 pass
@@ -86,18 +86,20 @@ class ResultLogger(object):
             call ResultLogger callback to register the job. ResultLogger will use Results object to store and
             manage obtained results.
             """
-            self.results.append(job.id, job.kwargs['budget'], job.timestamps, job.result, job.exception)
+            # Extract what was saved in the original HpBandSter implementation
+            r = [job.id, job.kwargs['budget'], job.timestamps, job.result, job.exception]
+            self.results.append(r)
 
             with open(self.results_file, 'a') as f:
                 logger.debug('Saving new result %s to the results file %s' % (job.id, self.results_file))
-                f.write(json.dumps([job.id, job.kwargs['config']], sort_keys=True))
+                f.write(json.dumps(r, sort_keys=True))
                 f.write('\n')
 
         def get_results(self):
             for r in self.results:
                 yield r
 
-    def __init__(self, working_dir,):
+    def __init__(self, working_dir):
         self.working_dir = working_dir
 
         os.makedirs(working_dir, exist_ok=True)
@@ -105,7 +107,7 @@ class ResultLogger(object):
         indices = self._find_indices()
         self.current_index = max(indices) + 1 if indices else 0
 
-        logger.info('We found %d previous runs, this run will use previous results and save'
+        logger.info('We found %d previous run/runs, this run will use previous results and save '
                     'new ones using an index %d' % (len(indices), self.current_index))
 
         # Loads previous results if there are any
@@ -133,9 +135,10 @@ class ResultLogger(object):
         """
 
         for h_r, h_c in zip(self.historical_results, self.historical_configs):
-            for configuration_id, budget, loss in h_r.get_results():
+            for result in h_r.get_results():
+                configuration_id = result[0]
                 configuration = h_c.get_configuration(configuration_id, configuration_space=configuration_space)
-                yield configuration, budget, loss
+                yield configuration, result[1:]
 
     def _find_indices(self):
         """
@@ -150,6 +153,7 @@ class ResultLogger(object):
             files = [f.name for f in os.scandir(self.working_dir) if name in f.name]
             matched = [re.findall("%s_(\d+).json" % name, file) for file in files]
             matched = [int(v[0]) for v in matched if v]
+
             return sorted(matched)
 
         try:

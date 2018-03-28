@@ -1,4 +1,5 @@
-from src.deep_learning.pytorch.models.utils import SeparateChannelCNN, AllChannelsCNN, RNN
+from src.deep_learning.pytorch.models.cnn import SeparateChannelCNN, AllChannelsCNN
+from src.deep_learning.pytorch.models.rnn import RNN
 from src.deep_learning.pytorch.models.model_base import RnnBase
 import torch.nn as nn
 import logging

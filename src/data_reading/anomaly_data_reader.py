@@ -2,7 +2,7 @@ from src.data_reading.data_reader import SequenceDataReader
 import mne
 import os
 import numpy as np
-from src.utils import nested_list_len, load_dict
+from src.utils import load_dict
 import logging
 import random
 
@@ -75,9 +75,6 @@ class AnomalyDataReader(SequenceDataReader):
             else:
                 raise NotImplementedError('Can not create context for this label_type %s' % label_type)
 
-        def reset(self, sequence_size):
-            super().reset(sequence_size)
-
         # Scale from 0.5 to 2.0
         @staticmethod
         def random_scale():
@@ -89,9 +86,8 @@ class AnomalyDataReader(SequenceDataReader):
 
         def read_data(self, serialized):
             index, sequence_size = serialized
-            data = self.file_handler.get_data(None, index, index+ sequence_size).astype(np.float32)
+            data = self.file_handler.get_data(None, index, index+sequence_size).astype(np.float32)
             data = np.transpose(data)
-
             # Now data has shape time x features
 
             # Normalize
@@ -119,7 +115,7 @@ class AnomalyDataReader(SequenceDataReader):
     @staticmethod
     def add_arguments(parser):
         SequenceDataReader.add_arguments(parser)
-        parser.add_argument("label_type", type=str, dest='label_type', choices=AnomalyDataReader.label_types,
+        parser.add_argument("label_type", type=str, choices=AnomalyDataReader.label_types,
                             help="Path to the directory containing the data")
         parser.add_argument("normalization_type", type=str, dest='normalization_type',
                             choices=AnomalyDataReader.normalization_types,
@@ -208,29 +204,10 @@ class AnomalyDataReader(SequenceDataReader):
             raise RuntimeError(error)
 
         logger.debug('Will use %s as a label type' % self.label_type)
-
         logger.debug('Create info objects for the files (Number of all sequences: %s' % len(info_dicts))
 
-        if self.data_type == self.Validation_Data or self.data_type == self.Train_Data:
-
-            if self.train_on_full:
-                assert self.data_type != self.Validation_Data, 'There is no validation data if train_on_full is set ' \
-                                                               'to 1'
-                validation_info_dicts = None
-                train_info_dicts = info_dicts + info_dicts
-            else:
-                # Split out the data according to the CV fold
-                start = int(self.cv_k/self.cv_n * len(info_dicts))
-                end = int((self.cv_k+1)/self.cv_n * len(info_dicts))
-                logger.debug("Using CV split cv_n: %s, cv_k: %s, start: %s, end: %s" % (self.cv_n, self.cv_k, start, end))
-
-                validation_info_dicts = info_dicts[start:end]
-                train_info_dicts = info_dicts[:start] + info_dicts[end:]
-
-            if self.data_type == self.Train_Data:
-                info_dicts = train_info_dicts
-            else:
-                info_dicts = validation_info_dicts
+        # Get corresponding cross validation data.
+        info_dicts = self.cv_split(info_dicts)
 
         if self.normalization_type == self.normalization_none:
             logger.debug('Will not normalize the data.')
@@ -251,11 +228,6 @@ class AnomalyDataReader(SequenceDataReader):
                                                                 self.offset_size, self.random_mode,
                                                                 self.limit_duration, self.use_augmentation)
                                   for (j, label_info_dict) in enumerate(label_info_dicts)])
-
-            logger.debug('Label %s: Number of recordings %d, Cumulative Length %d' %
-                         (label, len(self.examples[i]), sum([e.get_length() for e in self.examples[i]])))
-
-        logger.debug('Number of sequences in the dataset %d' % nested_list_len(self.examples))
 
     @staticmethod
     # Has to be a static method, context_size is required when creating the model,

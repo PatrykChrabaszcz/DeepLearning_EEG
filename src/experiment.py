@@ -30,7 +30,7 @@ class Experiment:
     # Parsing arguments
     def add_arguments(parser):
         parser.section('experiment')
-        parser.add_argument("working_dir", type=str, required=True,
+        parser.add_argument("working_dir", type=str,
                             help="Directory for results and other important stuff.")
         parser.add_argument("model_class_name", default='SimpleRNN',
                             help="Model class used for the training.")

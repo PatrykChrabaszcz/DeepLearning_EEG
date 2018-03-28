@@ -12,7 +12,7 @@ tutorial/data/
 tutorial/logs/
 tutorial/models
 meta*/
-tools/
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

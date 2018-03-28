@@ -81,7 +81,7 @@ class BayesianOptimizer(Master):
                          nameserver_port=ns_port,
                          host=ns_host,
                          logger=master_logger,
-                         result_logger=json_result_logger(directory=working_dir, overwrite=True))
+                         result_logger=results_logger)
 
         # Ugly, but no other way to set it
         self.dispatcher.logger = dispatcher_logger

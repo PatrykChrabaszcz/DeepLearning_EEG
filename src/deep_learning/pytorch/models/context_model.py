@@ -1,4 +1,3 @@
-from src.deep_learning.pytorch.models.utils import LockedDropout, RNN
 from src.deep_learning.pytorch.models.model_base import PytorchModelBase
 from torch.autograd import Variable
 import torch.nn.functional as F

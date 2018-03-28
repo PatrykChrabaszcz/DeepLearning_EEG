@@ -161,6 +161,16 @@ class ExperimentArguments(object):
             config_space = read_pcs(s)
         return config_space
 
+    @staticmethod
+    def ini_to_json(ini_file):
+        ini_conf = ConfigParser()
+        ini_conf.read(ini_file)
+        json_dict = {}
+        for section in ini_conf.sections():
+            json_dict = {**json_dict, **dict(ini_conf.items(section))}
+
+        return json_dict
+
     def add_class_arguments(self, class_type):
         """
         Adds arguments specified in the class 'class_type' to the internal Argument Parser object.
@@ -195,7 +205,7 @@ class ExperimentArguments(object):
         args, unknown_args = self._ini_file_parser.parse_known_args()
         ini_file = args.ini_file
 
-        # By default ini file is empty string which means that we don't use it
+        # By default ini file is an empty string which means that we don't use it
         if ini_file != "":
             assert os.path.isfile(ini_file), 'Could not find specified (%s) ini file' % ini_file
 

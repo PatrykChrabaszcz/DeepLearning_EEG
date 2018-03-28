@@ -1,14 +1,12 @@
 from hpbandster.config_generators.base import base_config_generator
 from src.hpbandster.results_logger import ResultLogger
 from ConfigSpace import Configuration
+from ConfigSpace import OrdinalHyperparameter
 import traceback
 import scipy.stats as sps
 import statsmodels.api as sm
 import numpy as np
 import logging
-import os
-import pickle
-import json
 
 
 # Initialize logging
@@ -22,6 +20,47 @@ class ConfigGenerator(base_config_generator):
     This class keeps track of already evaluated configurations for different budgets. When sufficient number of points
     is recorded it will build a Bayesian Optimization model and sample new configurations using that model.
     """
+
+    class OrdinalChecker:
+        """
+        Ordinal hyperparameters are for some reason treated more like categorical than integer.
+        We need to address this problem
+        """
+
+        def __init__(self, config_space):
+            self.config_space = config_space
+            self.indices = []
+            self.sizes = []
+            for i, h in enumerate(config_space.get_hyperparameters()):
+                if isinstance(h, OrdinalHyperparameter):
+                    self.indices.append(i)
+                    self.sizes.append(len(h.sequence))
+
+        def get_array(self, configuration):
+            array = configuration.get_array()
+
+            for i, s in zip(self.indices, self.sizes):
+                # v has value 0, 1, 2, 3, ...
+                v = array[i]
+                # We need to convert it to [0, 1]
+                n_v = (v + 0.5) / s
+
+                array[i] = n_v
+            return array
+
+        def get_configuration(self, vector):
+            vector = np.copy(vector)
+
+            for i, s in zip(self.indices, self.sizes):
+                # v has value [0, 1]
+                v = vector[i]
+                # Convert back to 0, 1, 2, 3, ...
+                n_v = v*s - 0.5
+                # For example if s is 4 and v in 1 then 3.5 would round to 4 but we want it to round to 3.
+                vector[i] = np.clip(round(n_v), 0, s-1)
+
+            return Configuration(self.config_space, vector=vector)
+
     @staticmethod
     def add_arguments(parser):
         parser.section('config_generator')
@@ -55,6 +94,7 @@ class ConfigGenerator(base_config_generator):
         super().__init__(logger=logger)
 
         self.config_space = config_space
+        self.ordinal_checker = ConfigGenerator.OrdinalChecker(config_space)
         self.working_dir = working_dir
         self.min_points_in_model = min_points_in_model
         self.top_n_percent = top_n_percent
@@ -89,8 +129,13 @@ class ConfigGenerator(base_config_generator):
             results_logger: Object that holds information about previous configurations and results
         """
 
-        for configuration, budget, loss in results_logger.get_results(self.config_space):
-            self.add_configuration(configuration, budget, loss)
+        try:
+            for configuration, r in results_logger.get_results(self.config_space):
+                budget = r[0]
+                loss = np.inf if r[2] is None else r[2]["loss"]
+                self.add_configuration(configuration, budget, loss)
+        except:
+            print('Except')
 
         # Start from the biggest budget
         for budget in sorted(self.configs.keys())[::-1]:
@@ -192,7 +237,7 @@ class ConfigGenerator(base_config_generator):
                 info_dict = dict(model_based_pick=False)
             else:
                 logger.debug('Best point proposed to evaluate: {}, {}'.format(best_proposed_point, best))
-                sample = Configuration(self.config_space, vector=best_proposed_point)
+                sample = self.ordinal_checker.get_configuration(vector=best_proposed_point)
                 info_dict = dict(model_based_pick=True)
         except KeyError:
             self.logger.warning("Sampling based optimization with %i samples failed\n %s \nUsing random configuration" %
@@ -267,7 +312,7 @@ class ConfigGenerator(base_config_generator):
 
         # Save new results
         # Standardize values (categorical: {0, 1, ...} integer, ordinal and continuous [0, 1])
-        self.configs[budget].append(configuration.get_array())
+        self.configs[budget].append(self.ordinal_checker.get_array(configuration))
         self.losses[budget].append(loss)
 
     def update_kde_model(self, budget):
@@ -282,7 +327,6 @@ class ConfigGenerator(base_config_generator):
 
         sample_cnt = train_configs.shape[0]
 
-        # TODO: Question about using max here, it makes both n_good and n_bad the same at the beginning
         n_good = max(self.min_points_in_model, (self.top_n_percent * sample_cnt) // 100)
         n_bad = max(self.min_points_in_model, ((100 - self.top_n_percent) * sample_cnt) // 100)
 
@@ -313,7 +357,8 @@ class ConfigGenerator(base_config_generator):
 if __name__ == '__main__':
     from src.experiment_arguments import ExperimentArguments
 
-    working_dir = '/mhome/chrabasp/EEG_Results/BO_Anomaly'
+    logger.setLevel(logging.DEBUG)
+    working_dir = '/mhome/chrabasp/EEG_Results/BO_Anomaly_6'
     config_space_file = '/mhome/chrabasp/Workspace/EEG/config/anomaly_simple.pcs'
     results_logger = ResultLogger(working_dir=working_dir)
     config_space = ExperimentArguments.read_configuration_space(config_space_file)
@@ -326,9 +371,26 @@ if __name__ == '__main__':
                                        bandwidth_factor=3.0,
                                        min_bandwidth=0.001,
                                        bw_estimation_method='normal_reference')
+
     config_generator.load_from_results_logger(results_logger)
 
-    c = np.array(config_generator.configs[list(config_generator.configs.keys())[0]][:3])
+    model = config_generator.kde_models[27.0]['good']
+    model_bad = config_generator.kde_models[27.0]['bad']
+    # print(model)
+    # print(model_bad)
+    #
+    print(model.data[:, 8])
+    for i, h, bw, t in zip(range(len(model.bw)), config_space.get_hyperparameters(), model.bw, config_generator.vartypes):
+        print(h)
+        print(t, bw)
 
-    print('Finished...')
+        try:
+            point = np.array([0.] * 18)
+            point[i] = 1.
+            print([model.pdf(point*i) for i in range(len(h.choices))])
+        except AttributeError:
+            pass
+    #
+    # print(config_generator.get_config(1.0))
+    # print('Finished...')
 

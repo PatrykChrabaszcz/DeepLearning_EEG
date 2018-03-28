@@ -1,11 +1,40 @@
+from src.deep_learning.pytorch.models.model_base import PytorchModelBase
+from src.deep_learning.pytorch.models.cnn import SplitConv
+from torch import nn, transpose, from_numpy
+from torch.nn import Sequential, BatchNorm1d, ReLU, Dropout
+from torch.nn import init, MaxPool1d, AvgPool1d, LogSoftmax
+import logging
 import numpy as np
-from torch import nn
-from torch.nn import init
-
+from torch.autograd import Variable
 from braindecode.torch_ext.modules import Expression
 from braindecode.torch_ext.functions import safe_log, square
-from braindecode.torch_ext.util import np_to_var
-from src.dl_pytorch.model import PytorchModelBase
+
+
+nonlin_dict = {
+    'square': square,
+    'safe_log': safe_log
+}
+pool_dict = {
+    "max": MaxPool1d,
+    "mean": AvgPool1d
+}
+
+
+logger = logging.getLogger(__name__)
+
+
+# remove empty dim at end and potentially remove empty time dim
+# do not just use squeeze as we never want to remove first dim
+def _squeeze_final_output(x):
+    assert x.size()[3] == 1
+    x = x[:, :, :, 0]
+    if x.size()[2] == 1:
+        x = x[:, :, 0]
+    return x
+
+
+def _transpose_time_to_spat(x):
+    return x.permute(0, 3, 2, 1)
 
 
 class ShallowFBCSPNet(PytorchModelBase):
@@ -16,167 +45,84 @@ class ShallowFBCSPNet(PytorchModelBase):
     @staticmethod
     def add_arguments(parser):
         PytorchModelBase.add_arguments(parser)
-        parser.add_argument("cnn_c_layers", type=int, default=3,
-                            help="Number of layers in the first cnn block. "
-                                 "Each channel processed separately the same filters.")
-        parser.add_argument("cnn_c_channels", type=int, default=10,
-                            help="Number of filters in the first cnn block.")
-        parser.add_argument("cnn_c_width", type=int, default=10,
-                            help="Width in time dimension of the kernels in the first cnn block.")
-        parser.add_argument("cnn_c_stride", type=int, default=2,
-                            help="Stride for the first CNN block.")
+        parser.add_argument("n_filters_time", type=int, default=40,
+                            help="TODO")
+        parser.add_argument("filter_time_length", type=int, default=25,
+                            help="TODO")
+        parser.add_argument("n_filters_spat", type=int, default=40,
+                            help="TODO")
+        parser.add_argument("pool_time_length", type=int, default=75,
+                            help="TODO")
+        parser.add_argument("pool_time_stride", type=int, default=15,
+                            help="TODO")
+        parser.add_argument("conv_nonlin", type=str, default="square", choices=nonlin_dict.keys(),
+                            help="TODO")
+        parser.add_argument("pool_mode", type=str, default="mean",
+                            help="TODO")
+        parser.add_argument("pool_nonlin", type=str, default="safe_log",
+                            help="TODO")
+        parser.add_argument("batch_norm", type=int, default=1,
+                            help="TODO")
+        parser.add_argument("batch_norm_alpha", type=float, default=0.1,
+                            help="TODO")
+        parser.add_argument("drop_prob", type=float, default=0.5,
+                            help="TODO")
+        parser.add_argument("final_conv_length", type=int, default=30,
+                            help="TODO")
 
-        parser.add_argument("cnn_f_layers", type=int, default=3,
-                            help="Number of layers in the second cnn block. "
-                                 "All channels processed together")
-        parser.add_argument("cnn_f_channels", type=int, default=10,
-                            help="Number of filters in the second cnn block.")
-        parser.add_argument("cnn_f_width", type=int, default=10,
-                            help="Width in time dimension of the kernels in the second cnn block.")
-        parser.add_argument("cnn_f_stride", type=int, default=2,
-                            help="Stride for the second CNN block.")
         return parser
 
-    # input_size, output_size,
-    def __init__(self, in_chans,
-                 n_classes,
-                 input_time_length=None,
-                 n_filters_time=40,
-                 filter_time_length=25,
-                 n_filters_spat=40,
-                 pool_time_length=75,
-                 pool_time_stride=15,
-                 final_conv_length=30,
-                 conv_nonlin=square,
-                 pool_mode='mean',
-                 pool_nonlin=safe_log,
-                 split_first_layer=True,
-                 batch_norm=True,
-                 batch_norm_alpha=0.1,
-                 drop_prob=0.5):
+    def __init__(self, n_filters_time, filter_time_length, n_filters_spat,
+                 pool_time_length, pool_time_stride, conv_nonlin, pool_mode, pool_nonlin,
+                 batch_norm, batch_norm_alpha, drop_prob, final_conv_length, **kwargs):
+        super().__init__(**kwargs)
 
-        pool_class = dict(max=nn.MaxPool2d, mean=nn.AvgPool2d)[self.pool_mode]
+        self.sequential = Sequential()
+        split_cnn = SplitConv(in_size=self.input_size, middle_size=n_filters_time, out_size=n_filters_spat,
+                              time_kernel_size=filter_time_length, input_in_rnn_format=False)
+        self.sequential.add_module('split_cnn', split_cnn)
 
-        self.input_size = in_chans
-        self.output_size = n_classes
+        if batch_norm:
+            bn = BatchNorm1d(n_filters_spat)
+            self.sequential.add_module('batch_norm', bn)
 
-        self.split_first_layer = split_first_layer
-        self.n_filters_time = n_filters_time
-        self.batch_norm = batch_norm
+        non_lin = Expression(square)
+        self.sequential.add_module('non_lin_0', non_lin)
 
-        if self.split_first_layer:
-            self.dimshuffle = Expression(_transpose_time_to_spat)
-            self.conv_time = nn.Conv2d(1, self.n_filters_time, kernel_size=(self.filter_time_length, 1), stride=1)
-            self.conv_spat = nn.Conv2d(self.n_filters_time, self.n_filters_spat, kernel_size=(1, self.in_chans),
-                                       stride=1, bias=not self.batch_norm)
-            n_filters_conv = self.n_filters_spat
+        pool = AvgPool1d(kernel_size=pool_time_length, stride=pool_time_stride)
+        self.sequential.add_module('pool_1', pool)
+        #
+        non_lin = Expression(safe_log)
+        self.sequential.add_module('non_lin_1', non_lin)
 
-        else:
-            self.conv_time = nn.Conv2d(self.input_size, self.n_filters_time, (self.filter_time_length, 1), stride=1,
-                                       bias=not self.batch_norm)
-            n_filters_conv = self.n_filters_time
+        dropout = Dropout(p=drop_prob)
+        self.sequential.add_module('dropout', dropout)
 
+        conv = nn.Conv1d(in_channels=n_filters_spat, out_channels=self.output_size, kernel_size=final_conv_length,
+                         bias=True)
 
-        if self.batch_norm:
-            self.bnorm = nn.BatchNorm2d(n_filters_conv, momentum=self.batch_norm_alpha,
-                                        affine=True)
+        self.sequential.add_module('conv', conv)
 
-        self.conv_nonlin = Expression(conv_nonlin)
-        self.pool = pool_class(kernel_size=(pool_time_length, 1), stride=(pool_time_stride, 1))
+    def forward(self, x, hidden, context):
+        # Input is given as N x L x C
+        # ConvNets expect N x C x L
+        x = transpose(x, 1, 2)
+        x = self.sequential(x)
+        # Convert back to N x L x C
+        x = transpose(x, 1, 2)
+        x = x.contiguous()
 
-        self.pool_nonlin = Expression(self.pool_nonlin)
-        self.drop = nn.Dropout(p=self.drop_prob)
+        return x, hidden
 
-        if final_conv_length == 'auto':
-            out = model(np_to_var(np.ones(
-                (1, self.in_chans, self.input_time_length,1),
-                dtype=np.float32)))
-            n_out_time = out.cpu().data.numpy().shape[2]
-            self.final_conv_length = n_out_time
+    def offset_size(self, sequence_size):
+        # Forward dummy vector and find out what is the output shape
 
-        model.add_module('conv_classifier',
-                             nn.Conv2d(n_filters_conv, self.n_classes,
-                                       (self.final_conv_length, 1), bias=True))
-        model.add_module('softmax', nn.LogSoftmax())
-        model.add_module('squeeze',  Expression(_squeeze_final_output))
+        v = np.zeros((1, sequence_size, self.input_size), np.float32)
+        v = Variable(from_numpy(v))
+        if next(self.parameters()).is_cuda:
+            v = v.cuda()
 
+        o, h = self.forward(v, None, None)
+        o_size = o.size(1)
 
-        if final_conv_length == 'auto':
-            assert input_time_length is not None
-        self.__dict__.update(locals())
-        del self.self
-
-    def create_network(self):
-        pool_class = dict(max=nn.MaxPool2d, mean=nn.AvgPool2d)[self.pool_mode]
-        model = nn.Sequential()
-        if self.split_first_layer:
-            model.add_module('dimshuffle', Expression(_transpose_time_to_spat))
-            model.add_module('conv_time', nn.Conv2d(1, self.n_filters_time,
-                                                    (
-                                                    self.filter_time_length, 1),
-                                                    stride=1, ))
-            model.add_module('conv_spat',
-                             nn.Conv2d(self.n_filters_time, self.n_filters_spat,
-                                       (1, self.in_chans), stride=1,
-                                       bias=not self.batch_norm))
-            n_filters_conv = self.n_filters_spat
-        else:
-            model.add_module('conv_time',
-                             nn.Conv2d(self.in_chans, self.n_filters_time,
-                                       (self.filter_time_length, 1),
-                                       stride=1,
-                                       bias=not self.batch_norm))
-            n_filters_conv = self.n_filters_time
-        if self.batch_norm:
-            model.add_module('bnorm',
-                             nn.BatchNorm2d(n_filters_conv,
-                                            momentum=self.batch_norm_alpha,
-                                            affine=True),)
-        model.add_module('conv_nonlin', Expression(self.conv_nonlin))
-        model.add_module('pool',
-                         pool_class(kernel_size=(self.pool_time_length, 1),
-                                    stride=(self.pool_time_stride, 1)))
-        model.add_module('pool_nonlin', Expression(self.pool_nonlin))
-        model.add_module('drop', nn.Dropout(p=self.drop_prob))
-        if self.final_conv_length == 'auto':
-            out = model(np_to_var(np.ones(
-                (1, self.in_chans, self.input_time_length,1),
-                dtype=np.float32)))
-            n_out_time = out.cpu().data.numpy().shape[2]
-            self.final_conv_length = n_out_time
-        model.add_module('conv_classifier',
-                             nn.Conv2d(n_filters_conv, self.n_classes,
-                                       (self.final_conv_length, 1), bias=True))
-        model.add_module('softmax', nn.LogSoftmax())
-        model.add_module('squeeze',  Expression(_squeeze_final_output))
-
-        # Initialization, xavier is same as in paper...
-        init.xavier_uniform(model.conv_time.weight, gain=1)
-        # maybe no bias in case of no split layer and batch norm
-        if self.split_first_layer or (not self.batch_norm):
-            init.constant(model.conv_time.bias, 0)
-        if self.split_first_layer:
-            init.xavier_uniform(model.conv_spat.weight, gain=1)
-            if not self.batch_norm:
-                init.constant(model.conv_spat.bias, 0)
-        if self.batch_norm:
-            init.constant(model.bnorm.weight, 1)
-            init.constant(model.bnorm.bias, 0)
-        init.xavier_uniform(model.conv_classifier.weight, gain=1)
-        init.constant(model.conv_classifier.bias, 0)
-
-        return model
-
-
-# remove empty dim at end and potentially remove empty time dim
-# do not just use squeeze as we never want to remove first dim
-def _squeeze_final_output(x):
-    assert x.size()[3] == 1
-    x = x[:,:,:,0]
-    if x.size()[2] == 1:
-        x = x[:,:,0]
-    return x
-
-
-def _transpose_time_to_spat(x):
-    return x.permute(0, 3, 2, 1)
+        return sequence_size - o_size

@@ -3,6 +3,8 @@ import src.result_processing as metrics_module
 from time import time as get_time
 from src.utils import Stats
 import logging
+import traceback
+
 
 logger = logging.getLogger(__name__)
 
@@ -129,10 +131,11 @@ class ModelTrainerBase:
                         data_reader.initialize_epoch()
 
                         # Multiple iterations
+                        offset_size = self.model.offset_size(data_reader.sequence_size)
                         while True:
                             with get_batch_stats:
                                 ids, batch, time, labels, contexts = data_reader.get_batch()
-                                labels = labels[:, self.model.offset_size(data_reader.sequence_size):]
+                                labels = labels[:, offset_size:]
                                 hidden = self.model.import_state(data_reader.get_states(ids))
 
                             with one_iteration_stats:
@@ -170,10 +173,10 @@ class ModelTrainerBase:
                 data_reader.stop_readers()
                 return metrics
             except Exception as e:
-                logger.warning('Unexpected exception in Model Trainer %s' % e)
+                logger.warning('Unexpected exception in Model Trainer %s, %s' % (e, traceback.format_exc()))
+
                 data_reader.stop_readers()
                 return metrics
-
 
     def _one_iteration(self, batch, time, hidden, labels, context, update=False, progress=0.0):
         raise NotImplementedError

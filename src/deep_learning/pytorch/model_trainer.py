@@ -5,9 +5,10 @@ from torch.autograd import Variable
 from torch import nn
 import logging
 import torch
-import numpy as np
-from time import time as get_time
+
+
 logger = logging.getLogger(__name__)
+
 
 criterion_dict = {
     "CrossEntropy": nn.CrossEntropyLoss,
