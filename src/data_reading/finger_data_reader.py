@@ -37,6 +37,9 @@ class FingerDataReader(SequenceDataReader):
 
             label = self.labels[index: index + sequence_size]
 
+            assert not np.isnan(data).any(), 'Data has nans %s' % data
+            assert not np.isnan(label).any(), 'Label has nans %s' % label
+
             return data, time, label, self.example_id, self.context
 
         # We need to overwrite this method, all examples read from the same array, we need to read from a
@@ -52,15 +55,15 @@ class FingerDataReader(SequenceDataReader):
     @staticmethod
     def add_arguments(parser):
         SequenceDataReader.add_arguments(parser)
-        parser.add_argument("subject", type=int,choices=[1, 2, 3], default=1,
+        parser.add_argument("subject", type=int, choices=[1, 2, 3], default=1,
                             help="Number of the patient.")
-        parser.add_argument('fingers', nargs='+', default=[0, 1, 2, 4], type=int,
-                            help="Which fingers will be used")
+        parser.add_argument('fingers', default='0,1,2,4', type=str,
+                            help="Which fingers will be used, comma separated without spaces")
         return parser
 
     def _initialize(self, subject, fingers, **kwargs):
         self.subject = subject
-        self.fingers = fingers
+        self.fingers = [int(f) for f in fingers.split(',')]
 
         if self.balanced:
             logger.warning('Class balancing is not implemented for this dataset.')
@@ -76,8 +79,11 @@ class FingerDataReader(SequenceDataReader):
         data_dict = loadmat(file)
         data = data_dict['train_data'].astype(np.float32)
 
-        # Remove 4th finger
+        data -= data.mean()
+        data /= data.std()
+        # Filter out fingers
         labels = data_dict['train_dg'].astype(np.float32)[:, self.fingers]
+
 
         # Get the data from cross-validation split
         # Problematic dataset, not sure yet how to connect training data if validation split is in the middle
@@ -129,5 +135,5 @@ class FingerDataReader(SequenceDataReader):
         return 48
 
     @staticmethod
-    def output_size(**kwargs):
-        return len(kwargs['fingers'])
+    def output_size(fingers, **kwargs):
+        return len(fingers.split(','))

@@ -27,22 +27,20 @@ class ChronoNet(RnnBase):
             x = torch.transpose(x, 1, 2)
             x = torch.cat([self.conv_1(x), self.conv_2(x), self.conv_3(x)], dim=1)
             x = self.non_linearity()(x)
-            # if self.batch_norm:
-            #     x = self.bnn(x)
-            # Transpose back to N x L x C
             x = torch.transpose(x, 1, 2)
             return x
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.inception_block_1 = ChronoNet.InceptionBlock(self.input_size, self.batch_norm, out_size=32)
-        self.inception_block_2 = ChronoNet.InceptionBlock(32*3, self.batch_norm, out_size=32)
-        self.inception_block_3 = ChronoNet.InceptionBlock(32*3, self.batch_norm, out_size=32)
+        self.inception_block_1 = ChronoNet.InceptionBlock(self.input_size, batch_norm=False, out_size=32)
+        self.inception_block_2 = ChronoNet.InceptionBlock(32*3, batch_norm=False, out_size=32)
+        self.inception_block_3 = ChronoNet.InceptionBlock(32*3, batch_norm=False, out_size=32)
 
         cell = RnnBase.cell_mapper[self.rnn_cell_type]
         self.rnn = RNN(cell=cell, in_size=32*3, hidden_size=self.rnn_hidden_size,
                        num_layers=self.rnn_num_layers, dropout_f=self.dropout_f, dropout_h=self.dropout_h,
-                       batch_norm=self.batch_norm, skip_mode=self.skip_mode)
+                       rnn_normalization=self.rnn_normalization, skip_first=self.skip_first, skip_last=self.skip_last,
+                       use_mc_dropout=self.use_mc_dropout, skip_mode=self.skip_mode)
 
         self.fc = nn.Linear(in_features=self.rnn_hidden_size, out_features=self.output_size, bias=True)
 

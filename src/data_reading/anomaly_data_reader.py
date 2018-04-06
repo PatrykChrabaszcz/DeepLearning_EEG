@@ -53,9 +53,13 @@ class AnomalyDataReader(SequenceDataReader):
 
             self.label_type = label_type
             self.use_augmentation = use_augmentation
-            # TODO save normalization in the dictionary
             self.age = (info_dict['age'] - 49.295620438) / 17.3674915241
-            self.label = info_dict[label_type]
+            # Use normalized age for training, network does not have to learn bias
+            if self.label_type == 'age':
+                self.label = self.age
+            else:
+                self.label = info_dict[label_type]
+
             self.mean = np.array(info_dict['mean'], dtype=np.float32)
             self.std = np.array(info_dict['std'], dtype=np.float32)
 

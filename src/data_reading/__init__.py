@@ -5,3 +5,4 @@ from src.data_reading.mnist_data_reader import MnistDataReader
 from src.data_reading.wikitext_reader import WikiTextReader
 from src.data_reading.adding_problem_reader import AddingProblemReader
 from src.data_reading.bbci_data_reader import BBCIDataReader
+from src.data_reading.bbci_data_reader_multi import BBCIDataReaderMulti

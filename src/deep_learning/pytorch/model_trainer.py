@@ -1,17 +1,17 @@
 from src.deep_learning.pytorch.optimizer import ExtendedAdam, CosineScheduler, ScheduledOptimizer
 from src.deep_learning.model_trainer import ModelTrainerBase
-from src.result_processing import SimpleLossMetrics
+from src.result_processing import MetricsSimpleLoss
 from torch.autograd import Variable
 from torch import nn
 import logging
 import torch
-
+from torch.nn.functional import log_softmax
 
 logger = logging.getLogger(__name__)
 
 
 criterion_dict = {
-    "CrossEntropy": nn.CrossEntropyLoss,
+    "CrossEntropy": nn.NLLLoss,
     "MeanSquaredError": nn.MSELoss,
     "L1Loss": nn.L1Loss
 }
@@ -85,6 +85,9 @@ class ModelTrainer(ModelTrainerBase):
         batch = self.model.lasso_module(batch)
         outputs, hidden = self.model(batch, hidden, context)
 
+        if 'CrossEntropy' in self.objective_type:
+            outputs = log_softmax(outputs, dim=-1)
+
         if '_last' in self.objective_type:
             training_outputs = outputs[:, -1, :]
             training_labels = labels[:, -1]
@@ -98,6 +101,7 @@ class ModelTrainer(ModelTrainerBase):
         loss = self.criterion(training_outputs, training_labels)
         loss = loss + self.model.lasso_module.loss()
 
+        # Backward pass
         if update:
             self.optimizer.zero_grad()
             loss.backward()
@@ -110,14 +114,14 @@ class ModelTrainer(ModelTrainerBase):
             #
             # print('Gradient norm: ', total_norm)
 
-            torch.nn.utils.clip_grad_norm(self.model.parameters(), self.gradient_clip)
-
+            if self.gradient_clip != 0:
+                torch.nn.utils.clip_grad_norm(self.model.parameters(), self.gradient_clip)
             self.optimizer.step(progress=progress)
 
         return outputs, hidden, loss
 
     def _gather_results(self, ids, outputs, labels, loss, metrics):
-        if self.metrics_class == SimpleLossMetrics:
+        if self.metrics_class == MetricsSimpleLoss:
             # Save the time by not copying outputs and labels to the CPU
             metrics.append_results(ids, None, None, loss.cpu().data.numpy()[0])
         else:

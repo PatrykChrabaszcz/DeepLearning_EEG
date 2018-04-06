@@ -1,13 +1,13 @@
-from src.result_processing.base_metrics import BaseMetrics
+from src.result_processing.metrics_base import MetricsBase
 
 
-class SimpleLossMetrics(BaseMetrics):
+class MetricsSimpleLoss(MetricsBase):
     """This class implements simple metrics that will only compute the loss. For world language models, number
     of classes (words in the dictionary) is huge. Efficient computation of statistics would be required (otherwise
     most of the training would be spend on computing statistics), this is not implemented right now.
     This class bypasses the problem by only storing the loss as computed by the network. Therefore it is faster
     but at the same time less informative."""
-    def __init__(self, name, output_size):
+    def __init__(self, name, output_size, skip_first_cnt):
         super().__init__(None, name, output_size)
         self.name = name
         self.loss = 0

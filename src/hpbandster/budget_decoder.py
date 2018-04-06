@@ -55,3 +55,26 @@ class SimpleBudgetDecoder(BudgetDecoderBase):
                 adjusted_arguments_list.append(adjusted_arguments)
 
         return adjusted_arguments_list
+
+
+class FullBudgetDecoder(BudgetDecoderBase):
+    """
+    This class simply
+
+    """
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def adjusted_arguments(self, arguments, budget=None):
+        assert budget is None, 'This class is only used when we check which budget schedule first particular dataset.'
+        adjusted_arguments_list = []
+        for b in [3, 9]:
+            for t in [1, 3]:
+                for c_n, c_k in [(b, i) for i in range(b)]:
+                    adjusted_arguments = arguments.copy()
+                    adjusted_arguments.cv_n = c_n
+                    adjusted_arguments.cv_k = c_k
+                    adjusted_arguments.budget = arguments.budget * t
+                    adjusted_arguments_list.append(adjusted_arguments)
+
+        return adjusted_arguments_list

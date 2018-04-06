@@ -39,21 +39,21 @@ class ResultLogger(object):
                 # If file is not present we will do not load anything
                 pass
 
-        def add_job(self, job):
+        def add(self, config_id, config, config_info):
             """
             After worker finishes his job, the job will be sent to the HpBandSter master module. This will in turn
             call ResultLogger callback to register the job. ResultLogger will use Configs object to store and
             manage evaluated configurations.
             """
             # If configuration is already present (for example it was executed for a lower budget) we do nothing.
-            if job.id not in self._configs.keys():
-                config = [job.kwargs['config'], job.config_info]
-                self._configs[job.id] = config
+            if config_id not in self._configs.keys():
+                config = [config, config_info]
+                self._configs[config_id] = config
 
                 # Save it to the file
                 with open(self.configs_file, 'a') as f:
-                    logger.debug('Saving new configuration %s to the configs file %s' % (job.id, self.configs_file))
-                    f.write(json.dumps([job.id] + config, sort_keys=True))
+                    logger.debug('Saving new configuration %s to the configs file %s' % (config_id, self.configs_file))
+                    f.write(json.dumps([config_id] + config, sort_keys=True))
                     f.write('\n')
 
         def get_configuration(self, configuration_id, configuration_space):
@@ -166,10 +166,12 @@ class ResultLogger(object):
         except IndexError:
             return []
 
+    def new_config(self, config_id, config, config_info):
+        self.current_configs.add(config_id, config, config_info)
+
     def __call__(self, job):
         """
         Method called by the HpBandSter master module.
         Simply forwards job config and results into the designated objects that will log them.
         """
-        self.current_configs.add_job(job)
         self.current_results.add_job(job)

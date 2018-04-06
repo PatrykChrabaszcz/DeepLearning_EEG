@@ -3,8 +3,8 @@ from src.hpbandster.config_generator import ConfigGenerator
 from src.hpbandster.results_logger import ResultLogger
 from hpbandster.iterations.successivehalving import SuccessiveHalving
 from hpbandster.distributed.utils import start_local_nameserver
-from hpbandster.api.util import json_result_logger
 from hpbandster.core.master import Master
+from threading import Thread
 import numpy as np
 import logging
 import json
@@ -42,6 +42,10 @@ class BayesianOptimizer(Master):
                             help="HPBandSter parameter.")
         parser.add_argument("nic_name", type=str, default='eth0',
                             help="Network interface card used for Pyro4.")
+        parser.add_argument("bo_loss", type=str, default='',
+                            help="Name of the field for bayesian optimizer optimization")
+        parser.add_argument("bo_loss_type", type=str, default='minimize', choices=['minimize', 'maximize'],
+                            help="Whether to minimize or to maximize bo_loss value")
         return parser
 
     def __init__(self, working_dir, config_space_file, n_iterations, run_id, eta, min_budget, max_budget, ping_interval,
@@ -51,7 +55,7 @@ class BayesianOptimizer(Master):
         # At the beginning will load results from the previous HpBandSter runs. Those can be used to initialize
         # config_generator
 
-        results_logger = ResultLogger(working_dir)
+        self.results_logger = ResultLogger(working_dir)
 
         # Config space that holds all hyperparameters, default values and possible ranges
         self.config_space = ExperimentArguments.read_configuration_space(config_space_file)
@@ -59,7 +63,7 @@ class BayesianOptimizer(Master):
         # Config generator that builds a model and samples promising configurations.
         # Initialized from previous configurations if those are present
         self.config_generator = ConfigGenerator(self.config_space, working_dir=working_dir, **kwargs)
-        self.config_generator.load_from_results_logger(results_logger)
+        self.config_generator.load_from_results_logger(self.results_logger)
 
         self.pyro_conf_file = os.path.join(working_dir, 'pyro.conf')
 
@@ -81,7 +85,7 @@ class BayesianOptimizer(Master):
                          nameserver_port=ns_port,
                          host=ns_host,
                          logger=master_logger,
-                         result_logger=results_logger)
+                         result_logger=self.results_logger)
 
         # Ugly, but no other way to set it
         self.dispatcher.logger = dispatcher_logger
@@ -117,6 +121,14 @@ class BayesianOptimizer(Master):
         self.run_id = run_id
         self.nic_name = nic_name
 
+    def run_in_thread(self):
+        # Start optimizer in a separate thread
+        thread = Thread(target=self.run, name='Optimizer thread',
+                        kwargs={'n_iterations': self.n_iterations})
+        thread.daemon = True
+        thread.start()
+        logger.info('Bayesian Optimizer started')
+
     def clean_pyro_file(self):
         """
         Removes the pyro conf file from working_dir when finished or interrupted. This is required if we
@@ -147,5 +159,6 @@ class BayesianOptimizer(Master):
         sh = SuccessiveHalving(HPB_iter=iteration,
                                num_configs=ns,
                                budgets=self.budgets[(-s - 1):],
-                               config_sampler=self.config_generator.get_config)
+                               config_sampler=self.config_generator.get_config,
+                               result_logger=self.results_logger)
         return sh

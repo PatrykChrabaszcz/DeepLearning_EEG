@@ -63,7 +63,7 @@ class ModelTrainerBase:
     budget_types = ['epoch', 'iteration', 'minute']
 
     def __init__(self, model, lr, gradient_clip, weight_decay, l2_decay, objective_type, budget, budget_type,
-                 optimizer, cosine_decay, metrics_class, **kwargs):
+                 optimizer, cosine_decay, metrics_class, metrics_skip_first, **kwargs):
         self.model = model
         self.learning_rate = lr
         self.gradient_clip = gradient_clip
@@ -75,6 +75,7 @@ class ModelTrainerBase:
         self.optimizer = optimizer
         self.cosine_decay = cosine_decay
         self.metrics_class = getattr(metrics_module, metrics_class)
+        self.metrics_skip_first = metrics_skip_first
 
     @staticmethod
     def add_arguments(parser):
@@ -105,18 +106,21 @@ class ModelTrainerBase:
         parser.add_argument("cosine_decay", type=int, choices=[0, 1],
                             default=0,
                             help="If set to 1 then will use cosine decay learning rate schedule with restarts.")
-        parser.add_argument("metrics_class", type=str, help="TODO")
-
+        parser.add_argument("metrics_class", type=str, help="Class used for metrics computation.")
+        parser.add_argument("metrics_skip_first", type=int, default=0,
+                            help="How many timepoints from each example will be excluded from the metrics computation."
+                                 "Should be lower than the duration of the shortest sample")
         return parser
 
     def run(self, data_reader, train=True):
-        time_stats = Stats('Time Statistics')
+        time_stats = Stats(logger=logger, name='Time Statistics', verbose=True)
         get_batch_stats = time_stats.create_child_stats('Get Batch')
         one_iteration_stats = time_stats.create_child_stats('Forward Pass')
         process_metrics_stats = time_stats.create_child_stats('Process Metrics')
         save_states_stats = time_stats.create_child_stats('Save States')
 
-        metrics = self.metrics_class(name=data_reader.data_type, output_size=self.model.output_size)
+        metrics = self.metrics_class(name=data_reader.data_type, output_size=self.model.output_size,
+                                     skip_first_cnt=self.metrics_skip_first)
 
         stop_run = ModelTrainerBase.StopRun(self.budget_type, self.budget, train=train)
 

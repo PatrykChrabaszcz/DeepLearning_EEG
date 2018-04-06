@@ -49,10 +49,10 @@ class SplitRNN(RnnBase):
 
         hidden_m = [h.index_select(1, ind_m) for h in hidden]
         hidden_f = [h.index_select(1, ind_f) for h in hidden]
-
-        out = Variable.zeros_like(x)
-        out[ind_m] = x_m
-        out[ind_f] = x_f
+        #
+        # out = Variable.zeros_like(x)
+        # out[ind_m] = x_m
+        # out[ind_f] = x_f
 
         # Rnn with all the features
         lstm_out_m, hidden_m = self.rnn_m(x_m, hidden_m)

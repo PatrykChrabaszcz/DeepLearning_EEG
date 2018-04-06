@@ -4,6 +4,7 @@ from braindecode.datautil.trial_segment import create_signal_target_from_raw_mne
 from braindecode.datautil.signalproc import exponential_running_standardize
 from braindecode.mne_ext.signalproc import resample_cnt, mne_apply
 from collections import OrderedDict
+from src.data_reading.utils import RunningStatistics
 import logging
 import os
 import numpy as np
@@ -23,6 +24,10 @@ class BBCIDataReader(SequenceDataReader):
 
             self.label = label
             self.data = np.transpose(data)
+            #
+            self.data -= self.data.mean(axis=0)
+            self.data /= self.data.std(axis=0)
+
             # Now data has shape time x features
 
             # No context for now for this data
@@ -75,6 +80,19 @@ class BBCIDataReader(SequenceDataReader):
         data = create_signal_target_from_raw_mne(cnt, name_to_code, self.segment_ival_ms)
         data_list = [(d, l) for d, l in zip(data.X, data.y)]
         data_list = self.cv_split(data_list)
+
+        # Normalize the data
+        if self.normalization_type == 'standard':
+            running_statistics = RunningStatistics(dim=data_list[0][0].shape[0], time_dimension_first=False)
+            for data, label in data_list:
+                running_statistics.append(data)
+
+            mean = running_statistics.mean_vector()
+            sdev = np.clip(np.sqrt(running_statistics.var_vector()), 1e-5, None)
+
+            logger.info('Normalize with \n mean: %s, \n sdev: %s' % (mean, sdev))
+            for i in range(len(data_list)):
+                data_list[i] = ((data_list[i][0] - mean) / sdev, data_list[i][1])
 
         # Create examples for 4 classes
         for label in range(4):

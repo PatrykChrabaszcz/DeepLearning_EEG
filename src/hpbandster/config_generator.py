@@ -1,7 +1,7 @@
 from hpbandster.config_generators.base import base_config_generator
 from src.hpbandster.results_logger import ResultLogger
 from ConfigSpace import Configuration
-from ConfigSpace import OrdinalHyperparameter
+from ConfigSpace import OrdinalHyperparameter, CategoricalHyperparameter
 import traceback
 import scipy.stats as sps
 import statsmodels.api as sm
@@ -330,6 +330,10 @@ class ConfigGenerator(base_config_generator):
         n_good = max(self.min_points_in_model, (self.top_n_percent * sample_cnt) // 100)
         n_bad = max(self.min_points_in_model, ((100 - self.top_n_percent) * sample_cnt) // 100)
 
+        print(budget)
+        print(len(sorted_train_configs))
+        print(n_good)
+        print(n_bad)
         # Low loss -> Good data points
         train_data_good = self.impute_conditional_data(sorted_train_configs[:n_good])
         train_data_bad = self.impute_conditional_data(sorted_train_configs[-n_bad:])

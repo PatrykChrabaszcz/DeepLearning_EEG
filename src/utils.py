@@ -46,7 +46,8 @@ def nested_list_len(v):
 
 
 class Stats:
-    def __init__(self, name='Stats', verbose=True):
+    def __init__(self, logger, name='Stats', verbose=True):
+        self.logger = logger
         self.name = name
         self.verbose = verbose
 
@@ -55,7 +56,7 @@ class Stats:
         self.children = []
 
     def create_child_stats(self, name):
-        child_stats = Stats(name, verbose=False)
+        child_stats = Stats(self.logger, name, verbose=False)
         self.children.append(child_stats)
 
         return child_stats
@@ -67,9 +68,9 @@ class Stats:
         self.duration += time.time() - self.start_time
 
         if self.verbose:
-            print('%s %gs' % (self.name, self.duration))
+            self.logger.info('%s %gs' % (self.name, self.duration))
             for child in self.children:
-                print('\t%s took %g%%' % (child.name, child.duration/self.duration*100))
+                self.logger.info('\t%s took %g%%' % (child.name, child.duration/self.duration*100))
 
 
 def save_dict(dictionary, path):
@@ -95,7 +96,7 @@ if __name__ == '__main__':
 
         log.debug('Hello Debug')
         log.info('Hello Info')
-        log.warn('Hello Warn')
+        log.warning('Hello Warn')
         log.error('Hello Error')
         log.critical('Hello Critical')
 

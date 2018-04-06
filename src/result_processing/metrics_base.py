@@ -2,7 +2,45 @@ import json
 import os
 
 
-class BaseMetrics:
+class MetricsExampleBase:
+    def __init__(self, example_id, output_size, skip_first_cnt):
+        self.example_id = example_id
+        self.output_size = output_size
+
+        self._skip_first_cnt = skip_first_cnt
+        self._already_skipped_cnt = 0
+        self._ready = False
+
+    # An interface
+    def append(self, output, labels):
+        timepoints_num = len(output)
+        assert timepoints_num == len(labels), 'Size mismatch for outputs and labels'
+        assert output.shape[1] == self.output_size, \
+            'Number of labels %d not consistent with the network output %d' % (self.output_size, output.shape[0])
+
+        # Check if we already skipped required amount of samples
+        still_to_skip = self._skip_first_cnt - self._already_skipped_cnt
+        if still_to_skip >= timepoints_num:
+            self._already_skipped_cnt += timepoints_num
+            return
+        elif still_to_skip > 0:
+            output = output[still_to_skip:]
+            labels = labels[still_to_skip:]
+            self._already_skipped_cnt += still_to_skip
+
+        self._append(output, labels)
+        self._ready = True
+
+    # Example not ready until more than 'skip_first_cnt' predictions seen.
+    def is_ready(self):
+        return self._ready
+
+    # Actual implementation should be provided in a subclass
+    def _append(self, output, labels):
+        raise NotImplementedError('Should be implemented in the derived class.')
+
+
+class MetricsBase:
     """
     Base class for metric computation. We consider the dataset as a set of examples, those examples might be represented
     as EEG recordings, MNIST images etc. This class will instantiate an object of ExampleClass type for each of those
@@ -20,7 +58,7 @@ class BaseMetrics:
         cases consider using only simple Metric classes like SimpleLossMetric
 
     """
-    def __init__(self, ExampleClass, name, output_size):
+    def __init__(self, ExampleClass, name, output_size, skip_first_cnt):
         self.ExampleClass = ExampleClass
         self.output_size = output_size
         self.examples = {}
@@ -32,6 +70,7 @@ class BaseMetrics:
         self.recent_loss_index = 0
 
         self.name = name
+        self.skip_first_cnt = skip_first_cnt
 
     def append_results(self, ids, output, labels, loss):
         """
@@ -57,7 +96,7 @@ class BaseMetrics:
 
         for example_id, o, l in zip(ids, output, labels):
             if example_id not in self.examples:
-                self.examples[example_id] = self.ExampleClass(example_id, self.output_size)
+                self.examples[example_id] = self.ExampleClass(example_id, self.output_size, self.skip_first_cnt)
             self.examples[example_id].append(o, l)
 
     def get_summarized_results(self):
@@ -65,13 +104,20 @@ class BaseMetrics:
         Returns a dictionary with summarized results from all examples.
         Those results will be used by the worker to respond to the  Architecture Search Optimizer.
         """
-        stats = [v.stats() for (k, v) in self.examples.items()]
+        stats = [v.stats() for (k, v) in self.examples.items() if v.is_ready()]
         res = self.ExampleClass.average_stats(stats)
 
         res['loss'] = self.loss/self.loss_cnt
         res['recent_loss'] = sum(self.recent_loss_array) / sum(self.recent_loss_bs_array)
 
         return res
+
+    def get_detailed_results(self):
+        detailed_res = {}
+        for example_id, example in self.examples.items():
+            if example.is_ready():
+                detailed_res[example_id] = example.stats()
+        return detailed_res
 
     def get_current_loss(self):
         """
@@ -88,10 +134,7 @@ class BaseMetrics:
         os.makedirs(directory, exist_ok=True)
 
         summarized_res = self.get_summarized_results()
-
-        detailed_res = {}
-        for example_id, example in self.examples.items():
-            detailed_res[example_id] = example.stats()
+        detailed_res = self.get_detailed_results()
 
         with open(os.path.join(directory, '%s_summarized_results.json' % self.name), 'w') as f:
             json.dump(summarized_res, f, sort_keys=True, indent=2)
@@ -110,6 +153,13 @@ class BaseMetrics:
         :return:
         """
         res = {}
+
+        if len(results) == 0:
+            return {}
+
         for key in results[0]:
-            res[key] = sum(r[key] for r in results)/len(results)
+            try:
+                res[key] = sum([r[key] for r in results]) / len(results)
+            except TypeError:
+                res[key] = [sum(b)/len(results) for b in zip(*[s[key] for s in results])]
         return res

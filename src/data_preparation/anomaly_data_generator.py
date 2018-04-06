@@ -1,3 +1,4 @@
+from braindecode.datautil.signalproc import exponential_running_standardize
 import resampy
 import numpy as np
 import logging
@@ -106,7 +107,7 @@ class DataGenerator:
             # txt_file_path = file_path[:-8] + '.txt'
 
     def __init__(self, data_path, cache_path, secs_to_cut, sampling_freq, duration_mins, max_abs_value, use_ekg,
-                 subsample_filter='kaiser_fast', version='v1.1.2'):
+                 exponential_normalization, subsample_filter='kaiser_fast', version='v1.1.2'):
         """
         :param data_path:
             Path to the original data
@@ -125,6 +126,7 @@ class DataGenerator:
         self.sampling_freq = sampling_freq
         self.duration_mins = duration_mins
         self.max_abs_value = max_abs_value
+        self.exponential_normalization = exponential_normalization
 
         os.makedirs(self.cache_path)
         with open(os.path.join(self.cache_path, 'data_generator_info.json'), 'w') as f:
@@ -139,7 +141,7 @@ class DataGenerator:
     def _file_names(self, train=True, normal=True):
         mode = 'train' if train else 'eval'
         label = 'normal' if normal else 'abnormal'
-        sub_path = 'normal_abnormal/{label}{version}/{version}/' \
+        sub_path = '{label}{version}/{version}/' \
                    'edf/{mode}/{label}/'.format(mode=mode, label=label, version=self.version)
         path = os.path.join(self.data_path, sub_path)
         return self.read_all_file_names(path, key=DataGenerator.Key.time_key)
@@ -182,6 +184,8 @@ class DataGenerator:
                 log.info(preprocessing_function)
 
                 data, fs = preprocessing_function(data, fs)
+                if data.dtype == np.float64:
+                    data = data.astype(np.float32)
                 assert (data.dtype == np.float32) and (type(fs) == float), (data.dtype, type(fs))
 
         # Extract some additional info: Age, Gender, number
@@ -215,6 +219,11 @@ class DataGenerator:
         if self.max_abs_value > 0:
             preprocessing_functions.append(lambda data, fs: (
                 np.clip(data, -self.max_abs_value, self.max_abs_value), fs))
+
+        if self.exponential_normalization:
+            preprocessing_functions.append(lambda data, fs: (
+                                           exponential_running_standardize(data.T, init_block_size=1000,
+                                                                           factor_new=0.001, eps=1e-4).T, fs))
 
         return preprocessing_functions
 
@@ -279,7 +288,10 @@ class DataGenerator:
 @click.option('--use_ekg', default=0, type=int, help='Clip if channel value is grater than max_abs_value')
 @click.option('--subsample_filter', default='kaiser_fast', type=click.Choice(['kaiser_fast', 'kaiser_best']),
               help='Use kaiser_best for high quality or kaiser_fast for fast computation.')
-def main(data_path, cache_path, secs_to_cut, sampling_freq, duration_mins, max_abs_value, use_ekg, subsample_filter):
+@click.option('--exponential_normalization', default=0, type=int,
+              help='If set to 1 then will perform exponential normalization using braindecode toolkit')
+def main(data_path, cache_path, secs_to_cut, sampling_freq, duration_mins, max_abs_value, use_ekg, subsample_filter,
+         exponential_normalization):
     print('Settings:')
     print('Data path: %s' % data_path)
     print('Cache path: %s' % cache_path)
@@ -288,11 +300,13 @@ def main(data_path, cache_path, secs_to_cut, sampling_freq, duration_mins, max_a
     print('Duration of the recording: %d' % duration_mins)
     print('Maximum absolute value: %g' % max_abs_value)
     print('Use EKG set to: %d' % use_ekg)
-    print('subsample_filter set to: %s' % subsample_filter)
+    print('Subsample_filter set to: %s' % subsample_filter)
+    print('Exponential normalization set to: %s' % exponential_normalization)
 
     data_generator = DataGenerator(data_path=data_path, cache_path=cache_path, secs_to_cut=secs_to_cut,
                                    sampling_freq=sampling_freq, duration_mins=duration_mins, max_abs_value=max_abs_value,
-                                   use_ekg=use_ekg, subsample_filter=subsample_filter)
+                                   use_ekg=use_ekg, subsample_filter=subsample_filter,
+                                   exponential_normalization=exponential_normalization)
     data_generator.prepare()
 
 

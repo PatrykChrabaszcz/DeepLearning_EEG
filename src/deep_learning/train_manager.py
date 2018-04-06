@@ -11,17 +11,21 @@ logger = logging.getLogger(__name__)
 # Connects all components: Model, Reader, Trainer and runs on training/validation/test data.
 # Used for single experiments as well as distributed experiments with Hyperparameter Optimization.
 class TrainManager:
-    def __init__(self, ModelClass, ReaderClass, TrainerClass, working_dir, **kwargs):
+    def __init__(self, ModelClass, ReaderClass, TrainerClass, working_dir, validation_data_type, **kwargs):
         self.ModelClass = ModelClass
         self.ReaderClass = ReaderClass
         self.TrainerClass = TrainerClass
         self.working_dir = working_dir
+        self.validation_data_type = validation_data_type
 
     @staticmethod
     def add_arguments(parser):
         parser.section('train_manager')
         parser.add_argument("run_log_folder", type=str, default='',
-                            help="Type of the training budget.")
+                            help="Folder used to log training results and store the model")
+        parser.add_argument("validation_data_type", type=str, default=SequenceDataReader.Validation_Data,
+                            choices=SequenceDataReader.DataTypes,
+                            help="What data type will be used for validation")
 
     # Create new directory for this run
     @staticmethod
@@ -36,22 +40,23 @@ class TrainManager:
         # Main code that trains the model for a given budget
         train_metrics = self._run(model, experiment_arguments, SequenceDataReader.Train_Data, train=True)
 
-        # Save config file so that we will be able to recover everything
+        # Save results, config file and the model; we will be able to recover everything.
         experiment_arguments.save_to_file(file_path=os.path.join(log_dir, 'config.ini'))
         train_metrics.save(directory=log_dir)
         model.save_model(os.path.join(log_dir, 'model'))
 
         return train_metrics
 
-    def validate(self, experiment_arguments, data_type=SequenceDataReader.Validation_Data):
+    def validate(self, experiment_arguments, save_metrics=True):
         model = self._initialize_model(experiment_arguments)
 
-        test_metrics = self._run(model, experiment_arguments, data_type, train=False)
+        valid_metrics = self._run(model, experiment_arguments, data_type=self.validation_data_type, train=False)
 
-        # Save validation/test results in a separate folder (we might want to store multiple validation results)
-        test_metrics.save(directory=os.path.join(self._log_dir(experiment_arguments), self.get_unique_dir()))
+        if save_metrics:
+            # Save validation/test results in a separate folder (we might want to store multiple validation results)
+            valid_metrics.save(directory=os.path.join(self._log_dir(experiment_arguments), self.get_unique_dir()))
 
-        return test_metrics
+        return valid_metrics
 
     def _run(self, model, experiment_arguments, data_type=SequenceDataReader.Train_Data, train=False):
         args = experiment_arguments.get_arguments()

@@ -47,9 +47,9 @@ class RNN(Module):
             self.add_module('rnn_block_%d' % i, rnn)
             self.rnns.append(rnn)
 
-            if i == 0 and skip_mode != 'concat':
+            if i == 0 and updated_skip_mode != 'concat':
                 in_size = hidden_size
-            elif skip_mode == 'concat':
+            elif updated_skip_mode == 'concat':
                 in_size += hidden_size
 
     def forward(self, x, hidden):

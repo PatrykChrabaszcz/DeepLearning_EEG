@@ -1,7 +1,7 @@
 from hpbandster.core.worker import Worker as HpBandSterWorker
 from src.data_reading.data_reader import SequenceDataReader
 from hpbandster.api.util import nic_name_to_host
-from src.result_processing.base_metrics import BaseMetrics
+from src.result_processing import MetricsBase
 from time import sleep
 import logging
 import json
@@ -15,9 +15,14 @@ hpbandster_logger.setLevel(logging.DEBUG)
 
 
 class Worker(HpBandSterWorker):
-    def __init__(self, train_manager, budget_decoder, experiment_args, working_dir, nic_name, run_id, **kwargs):
+    def __init__(self, train_manager, budget_decoder, experiment_args, working_dir, nic_name, run_id,
+                 bo_loss, bo_loss_type, **kwargs):
+        assert bo_loss_type in ['minimize', 'maximize']
+
         logger.info('Creating worker for distributed computation.')
 
+        self.bo_loss = bo_loss
+        self.bo_loss_type = bo_loss_type
         self.train_manager = train_manager
         self.budget_decoder = budget_decoder
         self.experiment_args = experiment_args
@@ -48,15 +53,24 @@ class Worker(HpBandSterWorker):
             if experiment_args.run_log_folder == "":
                 experiment_args.run_log_folder = self.train_manager.get_unique_dir()
 
-            self.train_manager.train(experiment_args)
+            train_metrics = self.train_manager.train(experiment_args)
 
-            valid_metrics = self.train_manager.validate(experiment_args, data_type=SequenceDataReader.Validation_Data)
+            valid_metrics = self.train_manager.validate(experiment_args)
+
+            # Print for the user
+            logger.info('Train Metrics:')
+            logger.info(json.dumps(train_metrics.get_summarized_results(), indent=2, sort_keys=True))
+            logger.info('%s Metrics:' % self.train_manager.validation_data_type.title())
+            logger.info(json.dumps(valid_metrics.get_summarized_results(), indent=2, sort_keys=True))
+
             result_list.append(valid_metrics.get_summarized_results())
 
-        averaged_results = BaseMetrics.average_metrics_results(result_list)
-        logger.info('Computation done, submit results (loss %s)' % averaged_results['loss'])
+        averaged_results = MetricsBase.average_metrics_results(result_list)
+        loss = -averaged_results[self.bo_loss] if self.bo_loss_type == 'maximize' else averaged_results[self.bo_loss]
+        logger.info('Computation done, submit results (loss %s)' % loss)
+
         return {
-            'loss': -averaged_results['X_acc_all_log_prob'],
+            'loss': loss,
             'info': averaged_results
         }
 
